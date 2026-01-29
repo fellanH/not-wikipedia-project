@@ -96,6 +96,12 @@ Human Seed ─────► Agent (minimal context) ─────► Unique 
 
 ## Project Structure
 
+| Repository | Description |
+|------------|-------------|
+| [not-wikipedia-project](https://github.com/fellanH/not-wikipedia-project) | Parent repository (this repo) |
+| [local-agent](https://github.com/fellanH/not-wikipedia) | Orchestration, MCP tools, and agent loop |
+| [wiki-content](https://github.com/fellanH/wiki-content) | Article content (deploys to Vercel) |
+
 ```
 not-wikipedia-project/            # Parent repository
 ├── local-agent/                  # Orchestration submodule
