@@ -97,35 +97,36 @@ Human Seed ─────► Agent (minimal context) ─────► Unique 
 ## Project Structure
 
 ```
-not-wikipedia/                    # Orchestration repository
-├── lib/
-│   ├── agent/
-│   │   ├── ralph.sh              # Main orchestration script
-│   │   ├── PROMPT.md             # Current task (auto-generated)
-│   │   ├── CONTRIBUTING.md       # Article template and guidelines
-│   │   └── logs/                 # Run logs (JSON)
-│   ├── mcp/                      # MCP tools (TypeScript)
-│   │   └── src/tools/
-│   │       ├── wiki-next-task.ts
-│   │       ├── wiki-discover.ts
-│   │       ├── wiki-git-publish.ts  # Git commit/push tool
-│   │       ├── wiki-build-index.ts  # Search index generator
-│   │       └── ...
-│   └── meta/                     # Metadata (ralph.db)
-└── docs/                         # Documentation
-
-wiki-content/                     # Content repository (SOURCE OF TRUTH)
-├── index.html                    # Homepage with search
-├── styles.css
-├── htmx.min.js                   # HTMX library
-├── wiki.js                       # Client-side search & previews
-├── api/search-index.json         # Pre-built search index
-├── fragments/                    # Article preview fragments
-├── categories/                   # Category pages
-├── wiki/*.html                   # Article HTML files
-└── vercel.json
-    ↓
-    GitHub → Vercel (auto-deploy on push)
+not-wikipedia-project/            # Parent repository
+├── local-agent/                  # Orchestration submodule
+│   ├── lib/
+│   │   ├── agent/
+│   │   │   ├── ralph.sh          # Main orchestration script
+│   │   │   ├── PROMPT.md         # Current task (auto-generated)
+│   │   │   ├── CONTRIBUTING.md   # Article template and guidelines
+│   │   │   └── logs/             # Run logs (JSON)
+│   │   ├── mcp/                  # MCP tools (TypeScript)
+│   │   │   └── src/tools/
+│   │   │       ├── wiki-next-task.ts
+│   │   │       ├── wiki-discover.ts
+│   │   │       ├── wiki-git-publish.ts
+│   │   │       ├── wiki-build-index.ts
+│   │   │       └── ...
+│   │   └── meta/                 # Metadata (ralph.db)
+│   └── docs/                     # Documentation
+│
+└── wiki-content/                 # Content submodule (SOURCE OF TRUTH)
+    ├── index.html                # Homepage with search
+    ├── styles.css
+    ├── htmx.min.js               # HTMX library
+    ├── wiki.js                   # Client-side search & previews
+    ├── api/search-index.json     # Pre-built search index
+    ├── fragments/                # Article preview fragments
+    ├── categories/               # Category pages
+    ├── wiki/*.html               # Article HTML files
+    └── vercel.json
+        ↓
+        GitHub → Vercel (auto-deploy on push)
 ```
 
 ## Auto-Deploy Architecture
@@ -179,7 +180,7 @@ The live site includes HTMX-powered interactivity:
 The search index and fragments are pre-generated:
 
 ```bash
-cd lib/mcp && node -e "
+cd local-agent/lib/mcp && node -e "
 const { tool } = require('./dist/tools/wiki-build-index.js');
 tool.handler({}).then(r => console.log(r.content[0].text));
 "
@@ -188,7 +189,11 @@ tool.handler({}).then(r => console.log(r.content[0].text));
 ## Usage
 
 ```bash
-cd lib/agent
+# From project root
+npm run ralph
+
+# Or directly
+cd local-agent/lib/agent
 ./ralph.sh
 ```
 
@@ -319,7 +324,11 @@ Each generated article includes:
 To manually commit and push changes to the content repo:
 
 ```bash
-cd lib/mcp
+# From project root
+npm run publish
+
+# Or directly
+cd local-agent/lib/mcp
 
 # Commit and push all changes
 node -e "require('./dist/tools/wiki-git-publish.js').tool.handler({}).then(r=>console.log(r.content[0].text))"
@@ -334,12 +343,12 @@ node -e "require('./dist/tools/wiki-git-publish.js').tool.handler({commit_messag
 ### Check Deployment Status
 
 ```bash
-cd ../wiki-content && vercel ls
+cd wiki-content && vercel ls
 ```
 
 ## Dashboard
 
-Open `dashboard/index.html` in a browser to browse the encyclopedia with search and filtering.
+Open `local-agent/lib/dashboard/index.html` in a browser to browse the encyclopedia with search and filtering.
 
 ## License
 

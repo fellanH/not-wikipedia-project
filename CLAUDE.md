@@ -31,10 +31,18 @@ not-wikipedia-project/
 
 ## Development Commands
 
-### Running the Agent Loop
+### From Project Root (Recommended)
 ```bash
-# From local-agent/lib/agent/
-./ralph.sh                          # Run with defaults (3 workers, 100 loops each)
+npm run ralph                       # Run agent loop (3 workers, 100 loops each)
+npm run build                       # Build MCP tools
+npm run publish                     # Manual git commit/push to wiki-content
+npm run health                      # Check ecosystem health
+```
+
+### Running the Agent Loop (with options)
+```bash
+cd local-agent/lib/agent
+./ralph.sh                          # Run with defaults
 PARALLEL_WORKERS=5 ./ralph.sh       # Override worker count
 AUTO_PUBLISH=false ./ralph.sh       # Disable auto git push
 USE_LIVE_CRAWL=true ./ralph.sh      # Use live 404 detection
@@ -53,12 +61,6 @@ cd local-agent/lib/agent
 node -e "require('../mcp/dist/tools/wiki-next-task.js').tool.handler({}).then(r=>console.log(r.content[0].text))"
 node -e "require('../mcp/dist/tools/wiki-ecosystem.js').tool.handler({}).then(r=>console.log(r.content[0].text))"
 node -e "require('../mcp/dist/tools/wiki-build-index.js').tool.handler({}).then(r=>console.log(r.content[0].text))"
-```
-
-### Publishing Articles
-```bash
-# Auto-publish is on by default; manual publish:
-node -e "require('../mcp/dist/tools/wiki-git-publish.js').tool.handler({}).then(r=>console.log(r.content[0].text))"
 ```
 
 ## Architecture
@@ -92,7 +94,7 @@ The agent receives **minimal context** to maximize creative variance:
 | `wiki_crawl_404s` | Find broken links on live site via HTTP |
 | `wiki_human_seed` | Get random human seed passage |
 
-### Database Schema (lib/meta/ralph.db)
+### Database Schema (local-agent/lib/meta/ralph.db)
 - `articles` - Article metadata (filename, title, category, link counts)
 - `researchers` - Fictional researcher entities
 - `links` - Article cross-references

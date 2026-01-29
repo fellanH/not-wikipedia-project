@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "description": "Wikipedia-style article generation system",
   "scripts": {
-    "ralph": "cd lib/agent && ./ralph.sh"
+    "ralph": "cd local-agent/lib/agent && ./ralph.sh",
+    "build": "cd local-agent/lib/mcp && npm run build",
+    "publish": "cd local-agent/lib/agent && node -e \"require('../mcp/dist/tools/wiki-git-publish.js').tool.handler({}).then(r=>console.log(r.content[0].text))\"",
+    "health": "cd local-agent/lib/agent && node -e \"require('../mcp/dist/tools/wiki-ecosystem.js').tool.handler({}).then(r=>console.log(r.content[0].text))\""
   },
   "private": true
 }
