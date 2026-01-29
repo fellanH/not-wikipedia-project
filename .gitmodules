@@ -1,0 +1,6 @@
+[submodule "local-agent"]
+	path = local-agent
+	url = https://github.com/fellanH/not-wikipedia.git
+[submodule "wiki-content"]
+	path = wiki-content
+	url = https://github.com/fellanH/wiki-content.git

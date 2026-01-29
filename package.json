@@ -1,0 +1,9 @@
+{
+  "name": "not-wikipedia",
+  "version": "1.0.0",
+  "description": "Wikipedia-style article generation system",
+  "scripts": {
+    "ralph": "cd lib/agent && ./ralph.sh"
+  },
+  "private": true
+}
