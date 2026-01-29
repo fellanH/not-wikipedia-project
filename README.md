@@ -2,7 +2,7 @@
 
 An autonomous Claude Code loop that builds a fictional encyclopedia — **Not-Wikipedia**.
 
-**Live Site**: [not-wikipedia.vercel.app](https://not-wikipedia.vercel.app)
+**Live Site**: [not-wikipedia.org](https://not-wikipedia.org)
 
 ## What It Does
 
