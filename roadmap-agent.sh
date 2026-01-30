@@ -369,6 +369,27 @@ $task_section
 
 ---
 
+## Creating User Tasks
+
+If during task execution you identify follow-up work, improvements, or related tasks that should be tracked, you can create user tasks using:
+
+\`\`\`bash
+# Create a user task (will be picked up by agents)
+# Path is relative to project root
+./roadmap-dashboard/create-user-task.sh "Task Title" "Description" [PRIORITY] [--assign]
+
+# Examples:
+./roadmap-dashboard/create-user-task.sh "Add tests for feature X" "Add unit tests for the new feature" P3
+./roadmap-dashboard/create-user-task.sh "Refactor Y component" "Refactor for better maintainability" P5 --assign
+\`\`\`
+
+User tasks will be automatically processed by agents in future runs. Use this for:
+- Follow-up improvements identified during implementation
+- Related work that should be tracked separately
+- Tasks that emerge from the current work but aren't part of the original spec
+
+---
+
 ## After Completing
 
 When you have completed all the acceptance criteria, respond with:
@@ -422,7 +443,7 @@ run_task() {
     fi
 
     # Build Claude command
-    local claude_cmd="claude -p \"$PROMPT_FILE\" --allowedTools \"Bash(read-only:true),Read,Glob,Grep,Edit,Write,Task,TodoWrite\""
+    local claude_cmd="claude -p \"$PROMPT_FILE\" --allowedTools \"Bash(read-only:true),Read,Glob,Grep,Edit,Write,Task,TodoWrite\" --dangerously-skip-permissions"
 
     if [ -n "$CLAUDE_MODEL" ]; then
         claude_cmd="$claude_cmd --model $CLAUDE_MODEL"
@@ -451,6 +472,24 @@ run_task() {
         task_result="BLOCKED"
         local reason=$(grep -A1 "TASK_BLOCKED: $task_id" "$log_file" | grep "REASON:" | sed 's/REASON: //')
         log_warn "Task $task_id blocked: $reason"
+        
+        # Create a user task for the blocker
+        if [ -n "$reason" ]; then
+            local blocker_title="Resolve blocker for task $task_id: $(echo "$task_title" | cut -c1-50)"
+            local blocker_description="Task $task_id was blocked with reason: $reason
+
+Original task: $task_id - $task_title
+Blocked at: $(date '+%Y-%m-%d %H:%M:%S')
+
+This user task was automatically created to track resolution of the blocker."
+            
+            log_info "Creating user task for blocker: $blocker_title"
+            if create_user_task "$blocker_title" "$blocker_description" "P2" "false"; then
+                log_success "User task created for blocker"
+            else
+                log_warn "Failed to create user task for blocker (dashboard may not be running)"
+            fi
+        fi
     elif [ $exit_code -ne 0 ]; then
         task_result="PENDING"  # Reset to pending for retry
         log_error "Task $task_id failed (exit code: $exit_code)"
@@ -618,6 +657,156 @@ EOF
 }
 
 # ============================================================================
+# User Tasks Management
+# ============================================================================
+
+USER_TASKS_FILE="$SCRIPT_DIR/.roadmap-user-tasks.json"
+DASHBOARD_PORT=${DASHBOARD_PORT:-3001}
+
+# Check for user tasks that need to be processed
+get_next_user_task() {
+    if [ ! -f "$USER_TASKS_FILE" ]; then
+        echo ""
+        return
+    fi
+
+    # Use jq if available, otherwise use grep/sed
+    if command -v jq >/dev/null 2>&1; then
+        local task=$(jq -r '.tasks[] | select(.status == "ASSIGNED" or .status == "PENDING") | .id' "$USER_TASKS_FILE" | head -1)
+        echo "$task"
+    else
+        # Fallback: grep for ASSIGNED or PENDING tasks
+        grep -o '"id":"[^"]*"' "$USER_TASKS_FILE" | head -1 | sed 's/"id":"\([^"]*\)"/\1/' || echo ""
+    fi
+}
+
+# Create a user task via API
+create_user_task() {
+    local title="$1"
+    local description="$2"
+    local priority="${3:-P5}"
+    local assign="${4:-false}"
+
+    if [ -z "$title" ]; then
+        log_error "create_user_task: title is required"
+        return 1
+    fi
+
+    local create_script="$SCRIPT_DIR/roadmap-dashboard/create-user-task.sh"
+    if [ -f "$create_script" ]; then
+        if [ "$assign" = "true" ]; then
+            "$create_script" "$title" "$description" "$priority" --assign
+        else
+            "$create_script" "$title" "$description" "$priority"
+        fi
+    else
+        log_warn "create-user-task.sh not found at $create_script, cannot create user task"
+        return 1
+    fi
+}
+
+# Process user tasks before roadmap tasks
+process_user_tasks() {
+    local user_task_id=$(get_next_user_task)
+    
+    if [ -z "$user_task_id" ]; then
+        return 0  # No user tasks to process
+    fi
+
+    log_info "Found user task: $user_task_id"
+    
+    # Extract task details
+    if command -v jq >/dev/null 2>&1; then
+        local title=$(jq -r ".tasks[] | select(.id == \"$user_task_id\") | .title" "$USER_TASKS_FILE")
+        local description=$(jq -r ".tasks[] | select(.id == \"$user_task_id\") | .description" "$USER_TASKS_FILE")
+        local priority=$(jq -r ".tasks[] | select(.id == \"$user_task_id\") | .priority" "$USER_TASKS_FILE")
+    else
+        # Fallback parsing
+        local title=$(grep -A 20 "\"id\":\"$user_task_id\"" "$USER_TASKS_FILE" | grep '"title"' | head -1 | sed 's/.*"title":"\([^"]*\)".*/\1/')
+        local description=$(grep -A 20 "\"id\":\"$user_task_id\"" "$USER_TASKS_FILE" | grep '"description"' | head -1 | sed 's/.*"description":"\([^"]*\)".*/\1/')
+        local priority="P5"
+    fi
+
+    log_task "Processing user task: $user_task_id - $title"
+    
+    # Create a temporary prompt file for the user task
+    local temp_prompt="$PROMPT_FILE.user-task"
+    cat > "$temp_prompt" << EOF
+# User Task Execution
+
+You are executing a user-created task from the roadmap dashboard.
+
+## Task Details
+
+**ID**: $user_task_id
+**Title**: $title
+**Priority**: $priority
+**Description**: 
+$description
+
+## Instructions
+
+1. Read the task description carefully
+2. Implement the requested changes
+3. Verify the work is complete
+4. When done, respond with:
+
+\`\`\`
+USER_TASK_COMPLETE: $user_task_id
+\`\`\`
+
+If you cannot complete the task, respond with:
+
+\`\`\`
+USER_TASK_BLOCKED: $user_task_id
+REASON: <description>
+\`\`\`
+
+EOF
+
+    # Run Claude on the user task
+    local log_file="$LOG_DIR/user-task-${user_task_id}-$(date +%Y%m%d-%H%M%S).log"
+    local claude_cmd="claude -p \"$temp_prompt\" --allowedTools \"Bash(read-only:true),Read,Glob,Grep,Edit,Write,Task,TodoWrite\" --dangerously-skip-permissions"
+
+    if [ -n "$CLAUDE_MODEL" ]; then
+        claude_cmd="$claude_cmd --model $CLAUDE_MODEL"
+    fi
+
+    log_info "Running Claude Code agent on user task..."
+    local start_time=$(date +%s)
+
+    set +e
+    run_with_timeout "$CLAUDE_TIMEOUT" bash -c "$claude_cmd" 2>&1 | tee "$log_file"
+    local exit_code=${PIPESTATUS[0]}
+    set -e
+
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+
+    # Check outcome
+    if grep -q "USER_TASK_COMPLETE: $user_task_id" "$log_file"; then
+        log_success "User task $user_task_id completed successfully"
+        # Update task status via API if dashboard is running
+        if command -v curl >/dev/null 2>&1; then
+            curl -s -X PUT "http://localhost:${DASHBOARD_PORT}/api/user-tasks/$user_task_id" \
+                -H "Content-Type: application/json" \
+                -d '{"status":"COMPLETED"}' > /dev/null 2>&1 || true
+        fi
+        rm -f "$temp_prompt"
+        return 0
+    elif grep -q "USER_TASK_BLOCKED: $user_task_id" "$log_file"; then
+        local reason=$(grep -A1 "USER_TASK_BLOCKED: $user_task_id" "$log_file" | grep "REASON:" | sed 's/REASON: //')
+        log_warn "User task $user_task_id blocked: $reason"
+        rm -f "$temp_prompt"
+        return 1
+    else
+        log_warn "User task $user_task_id: No completion signal detected"
+        rm -f "$temp_prompt"
+        return 1
+    fi
+}
+
+# ============================================================================
 # Main Loop
 # ============================================================================
 
@@ -700,7 +889,26 @@ main() {
             break
         fi
 
-        # Find next task
+        # Check for user tasks first (they take priority)
+        local user_task_id=$(get_next_user_task)
+        if [ -n "$user_task_id" ]; then
+            log_info "Processing user task: $user_task_id"
+            if process_user_tasks; then
+                ((success_count++))
+            else
+                ((fail_count++))
+            fi
+            
+            if [ "$SINGLE_MODE" = "true" ]; then
+                break
+            fi
+            
+            log_info "Waiting ${LOOP_DELAY}s before next task..."
+            sleep $LOOP_DELAY
+            continue
+        fi
+
+        # Find next roadmap task
         local task_id
         if [ -n "$SPECIFIC_TASK" ]; then
             task_id="$SPECIFIC_TASK"
@@ -724,8 +932,11 @@ main() {
             # Check if all done
             local pending_count=$(grep -c '`PENDING`' "$ROADMAP_FILE" 2>/dev/null || echo 0)
             if [ "$pending_count" -eq 0 ]; then
-                log_success "All tasks completed!"
-                break
+                log_success "All roadmap tasks completed!"
+                # Still check for user tasks before breaking
+                if [ -z "$(get_next_user_task)" ]; then
+                    break
+                fi
             fi
 
             log_info "Waiting for dependencies to be resolved..."

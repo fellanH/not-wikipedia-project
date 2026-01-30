@@ -4,9 +4,9 @@
 
 **Last Updated**: 2025-01-30
 **Total Tasks**:       35
-**Completed**: 6
-**In Progress**: 2
-**Pending**: 27
+**Completed**: 7
+**In Progress**: 4
+**Pending**: 24
 
 ---
 
@@ -156,7 +156,7 @@ describe('wiki-create-article', () => {
 
 ### 1.4 Unit Tests for wiki-edit-article.ts
 
-**Status**: `PENDING`
+**Status**: `IN_PROGRESS`
 **Priority**: P1
 **Effort**: Medium
 **Dependencies**: 1.1
@@ -204,7 +204,7 @@ describe('wiki-edit-article', () => {
 
 ### 1.5 Unit Tests for wiki-discover.ts
 
-**Status**: `PENDING`
+**Status**: `IN_PROGRESS`
 **Priority**: P1
 **Effort**: Medium
 **Dependencies**: 1.1
@@ -252,7 +252,7 @@ describe('wiki-discover', () => {
 
 ### 1.6 Unit Tests for wiki-git-publish.ts
 
-**Status**: `PENDING`
+**Status**: `DONE`
 **Priority**: P1
 **Effort**: Low
 **Dependencies**: 1.1

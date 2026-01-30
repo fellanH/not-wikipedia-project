@@ -7,6 +7,11 @@ let allTasks = [];
 let filteredTasks = [];
 let logSearchTerm = '';
 let logLevelFilter = '';
+let allUserTasks = [];
+let filteredUserTasks = [];
+let currentReviewTaskId = null;
+let reconnectTimeout = null;
+let reconnectAttempts = 0;
 
 // Configure marked for markdown rendering
 if (typeof marked !== 'undefined') {
@@ -48,6 +53,19 @@ const taskModal = document.getElementById('task-modal');
 const modalClose = document.getElementById('modal-close');
 const modalTaskId = document.getElementById('modal-task-id');
 const modalTaskContent = document.getElementById('modal-task-content');
+const btnCreateUserTask = document.getElementById('btn-create-user-task');
+const btnRefreshUserTasks = document.getElementById('btn-refresh-user-tasks');
+const userTasksContent = document.getElementById('user-tasks-content');
+const userTaskSearch = document.getElementById('user-task-search');
+const userTaskStatusFilter = document.getElementById('user-task-status-filter');
+const userTaskModal = document.getElementById('user-task-modal');
+const userTaskModalClose = document.getElementById('user-task-modal-close');
+const userTaskForm = document.getElementById('user-task-form');
+const userTaskCancel = document.getElementById('user-task-cancel');
+const userTaskReviewModal = document.getElementById('user-task-review-modal');
+const userTaskReviewClose = document.getElementById('user-task-review-close');
+const reviewCancel = document.getElementById('review-cancel');
+const reviewSubmit = document.getElementById('review-submit');
 
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -72,6 +90,11 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       // Also check if we should load latest log file
       loadLatestLogFile();
     }
+    
+    if (tabName === 'user-tasks') {
+      // Load user tasks when tab is activated
+      loadUserTasks();
+    }
   });
 });
 
@@ -93,7 +116,7 @@ async function loadLatestLogFile() {
       }
     }
   } catch (err) {
-    console.error('Failed to load latest log file:', err);
+    // Silently fail - not critical
   }
 }
 
@@ -356,12 +379,8 @@ async function loadStats() {
       }
     }
     
-    // Log sub-process detection
-    if (data.subAgents && data.subAgents.length > 0) {
-      console.log(`Detected ${data.subAgents.length} sub-process(es):`, data.subAgents);
-    }
   } catch (err) {
-    console.error('Failed to load stats:', err);
+    // Silently fail - will retry on next interval
   }
 }
 
@@ -429,8 +448,18 @@ function startLogStream() {
     const data = JSON.parse(e.data);
     if (data.type === 'file') {
       // Log file content - append directly
-      const fileInfo = data.filename ? ` (${data.filename})` : '';
+      let fileInfo = '';
+      if (data.filename) {
+        // Extract task ID from filename if present
+        const taskMatch = data.filename.match(/task-([0-9]+\.[0-9]+)-/);
+        if (taskMatch) {
+          fileInfo = ` (${data.filename} - Task ${taskMatch[1]})`;
+        } else {
+          fileInfo = ` (${data.filename})`;
+        }
+      }
       indicator.textContent = `Watching log file${fileInfo}`;
+      indicator.className = 'log-source-indicator active';
       appendLog('stdout', data.data);
     } else if (data.type === 'info') {
       // System info messages
@@ -438,6 +467,7 @@ function startLogStream() {
     } else {
       // Process stdout/stderr
       indicator.textContent = 'Live process output';
+      indicator.className = 'log-source-indicator active';
       appendLog(data.type, data.data);
     }
   });
@@ -453,6 +483,7 @@ function startLogStream() {
     const data = JSON.parse(e.data);
     appendLog('info', `Agent exited with code ${data.code}\n`);
     indicator.textContent = '';
+    indicator.className = 'log-source-indicator';
     // Check for external agents after exit
     setTimeout(loadStats, 500);
     stopLogStream();
@@ -465,9 +496,13 @@ function startLogStream() {
     if (data.isExternal) {
       const subCount = data.subAgents ? data.subAgents.length : 0;
       indicator.textContent = `Watching external agent logs${subCount > 0 ? ` (${subCount} sub-process${subCount > 1 ? 'es' : ''})` : ''}`;
+      indicator.className = 'log-source-indicator active';
     } else if (data.running) {
       const subCount = data.subAgents ? data.subAgents.length : 0;
       indicator.textContent = `Live process output${subCount > 0 ? ` (${subCount} sub-process${subCount > 1 ? 'es' : ''})` : ''}`;
+      indicator.className = 'log-source-indicator active';
+    } else {
+      indicator.className = 'log-source-indicator';
     }
     
     // If external agent detected, ensure log stream is active
@@ -476,26 +511,70 @@ function startLogStream() {
     }
   });
   
+  const maxReconnectAttempts = 10;
+  
   eventSource.onerror = (err) => {
-    console.error('SSE error:', err);
-    indicator.textContent = 'Connection lost';
-    appendLog('error', 'Connection lost. Reconnecting...\n');
-    // Reconnect after a delay
-    setTimeout(() => {
-      if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
-        startLogStream();
+    // Only handle errors if connection is actually closed
+    if (eventSource.readyState === EventSource.CLOSED) {
+      indicator.textContent = 'Connection lost';
+      
+      // Clear any pending reconnection
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
       }
-    }, 2000);
+      
+      // Prevent infinite reconnection loops
+      if (reconnectAttempts < maxReconnectAttempts) {
+        reconnectAttempts++;
+        const delay = Math.min(2000 * reconnectAttempts, 10000); // Exponential backoff, max 10s
+        appendLog('error', `Connection lost. Reconnecting in ${delay/1000}s... (attempt ${reconnectAttempts}/${maxReconnectAttempts})\n`);
+        
+        reconnectTimeout = setTimeout(() => {
+          reconnectTimeout = null;
+          if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
+            startLogStream();
+          }
+        }, delay);
+      } else {
+        appendLog('error', 'Max reconnection attempts reached. Please refresh the page.\n');
+        indicator.textContent = 'Connection failed - refresh page';
+        indicator.className = 'log-source-indicator error';
+      }
+    }
   };
+  
+  // Reset reconnect attempts on successful connection
+  eventSource.addEventListener('open', () => {
+    reconnectAttempts = 0;
+    if (reconnectTimeout) {
+      clearTimeout(reconnectTimeout);
+      reconnectTimeout = null;
+    }
+  });
+  
+  // Handle ping events for connection health
+  eventSource.addEventListener('ping', () => {
+    // Connection is healthy, reset reconnect attempts
+    reconnectAttempts = 0;
+  });
 }
 
 function stopLogStream() {
+  // Clear any pending reconnection
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
+  reconnectAttempts = 0;
+  
   if (eventSource) {
     eventSource.close();
     eventSource = null;
   }
   const indicator = document.getElementById('log-source-indicator');
   indicator.textContent = '';
+  indicator.className = 'log-source-indicator';
 }
 
 function appendLog(type, text) {
@@ -542,7 +621,10 @@ function renderLogs() {
     });
   }
   
-  filteredLogs.forEach(log => {
+  // Reverse order so latest messages appear at the top
+  const reversedLogs = [...filteredLogs].reverse();
+  
+  reversedLogs.forEach(log => {
     const time = log.timestamp.toLocaleTimeString();
     const div = document.createElement('div');
     div.className = `log-line ${log.type}`;
@@ -561,10 +643,10 @@ function renderLogs() {
   logsContent.innerHTML = '';
   logsContent.appendChild(container);
   
-  // Auto-scroll to bottom only if user is near bottom
-  const isNearBottom = logsContent.scrollHeight - logsContent.scrollTop - logsContent.clientHeight < 100;
-  if (isNearBottom) {
-    logsContent.scrollTop = logsContent.scrollHeight;
+  // Auto-scroll to top only if user is near top
+  const isNearTop = logsContent.scrollTop < 100;
+  if (isNearTop) {
+    logsContent.scrollTop = 0;
   }
 }
 
@@ -601,7 +683,9 @@ btnExportLogs.addEventListener('click', () => {
       })
     : logBuffer;
   
-  const logText = filteredLogs.map(log => {
+  // Reverse order for export so latest messages appear first
+  const reversedLogs = [...filteredLogs].reverse();
+  const logText = reversedLogs.map(log => {
     const time = log.timestamp.toLocaleTimeString();
     return `[${time}] ${log.line}`;
   }).join('\n');
@@ -661,7 +745,7 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Load log files list
+// Load log files list with enhanced metadata
 async function loadLogFiles() {
   try {
     const res = await fetch(`${API_BASE}/logs`);
@@ -673,17 +757,51 @@ async function loadLogFiles() {
       option.value = log;
       const metadata = data.metadata && data.metadata[log];
       if (metadata) {
-        const label = metadata.isActive 
-          ? `${log} ⚡ ${metadata.formattedAge}`
-          : `${log} (${metadata.formattedAge})`;
+        let label = log;
+        const parts = [];
+        
+        // Add active indicator
+        if (metadata.isCurrentlyActive) {
+          parts.push('⚡ LIVE');
+        } else if (metadata.isActive) {
+          parts.push('⚡');
+        }
+        
+        // Add task ID if available
+        if (metadata.taskId) {
+          parts.push(`Task ${metadata.taskId}`);
+        }
+        
+        // Add process association if available
+        if (metadata.associatedPid) {
+          parts.push(`PID ${metadata.associatedPid}`);
+        }
+        
+        // Add age
+        parts.push(metadata.formattedAge);
+        
+        if (parts.length > 0) {
+          label = `${log} (${parts.join(' • ')})`;
+        } else {
+          label = `${log} (${metadata.formattedAge})`;
+        }
+        
         option.textContent = label;
+        
+        // Mark currently active files
+        if (metadata.isCurrentlyActive) {
+          option.style.fontWeight = 'bold';
+          option.style.color = '#238636';
+        } else if (metadata.isActive) {
+          option.style.color = '#58a6ff';
+        }
       } else {
         option.textContent = log;
       }
       logSelect.appendChild(option);
     });
   } catch (err) {
-    console.error('Failed to load log files:', err);
+    // Silently fail - will retry on next interval
   }
 }
 
@@ -699,11 +817,67 @@ logSelect.addEventListener('change', async (e) => {
   } else {
     // Stop streaming and load specific file
     stopLogStream();
-    indicator.textContent = `Viewing: ${filename}`;
+    
+    // Clear buffer when switching to a specific file
+    logBuffer = [];
+    logsContent.innerHTML = '';
+    
     try {
       const res = await fetch(`${API_BASE}/logs/${filename}`);
       const data = await res.json();
-      logsContent.innerHTML = `<div class="log-line">${escapeHtml(data.content)}</div>`;
+      
+      // Build indicator text with metadata
+      let indicatorText = `Viewing: ${filename}`;
+      if (data.metadata) {
+        const parts = [];
+        if (data.metadata.taskId) {
+          parts.push(`Task ${data.metadata.taskId}`);
+        }
+        if (data.metadata.associatedProcess) {
+          parts.push(`PID ${data.metadata.associatedProcess.pid}`);
+        }
+        parts.push(data.metadata.size > 0 ? formatFileSize(data.metadata.size) : 'empty');
+        if (parts.length > 0) {
+          indicatorText += ` (${parts.join(' • ')})`;
+        }
+      }
+      indicator.textContent = indicatorText;
+      
+      // Format log content with line-by-line display
+      const lines = data.content.split('\n');
+      const fragment = document.createDocumentFragment();
+      const container = document.createElement('div');
+      
+      // Reverse order so latest messages appear at the top
+      const reversedLines = [...lines].reverse();
+      
+      reversedLines.forEach((line, index) => {
+        const div = document.createElement('div');
+        div.className = 'log-line stdout';
+        
+        // Try to detect log level from line content
+        const lineLower = line.toLowerCase();
+        if (lineLower.includes('error') || lineLower.includes('✗') || lineLower.includes('failed')) {
+          div.className = 'log-line error';
+        } else if (lineLower.includes('warn') || lineLower.includes('!')) {
+          div.className = 'log-line warn';
+        } else if (lineLower.includes('success') || lineLower.includes('✓') || lineLower.includes('completed')) {
+          div.className = 'log-line success';
+        } else if (lineLower.includes('info') || lineLower.includes('→')) {
+          div.className = 'log-line info';
+        }
+        
+        // Escape HTML but preserve structure
+        div.textContent = line;
+        container.appendChild(div);
+      });
+      
+      fragment.appendChild(container);
+      logsContent.innerHTML = '';
+      logsContent.appendChild(fragment);
+      
+      // Scroll to top
+      logsContent.scrollTop = 0;
     } catch (err) {
       logsContent.innerHTML = `<div class="log-line error">Error loading log: ${err.message}</div>`;
       indicator.textContent = '';
@@ -711,12 +885,21 @@ logSelect.addEventListener('change', async (e) => {
   }
 });
 
+function formatFileSize(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
 // Initial load
 loadRoadmap();
 loadPrompt();
 loadTasks();
 loadStats();
 loadLogFiles();
+loadUserTasks();
 
 // Initialize filters
 filteredTasks = allTasks;
@@ -724,8 +907,24 @@ filteredTasks = allTasks;
 // Auto-refresh stats every 5 seconds (includes external agent detection)
 setInterval(loadStats, 5000);
 
-// Refresh log files list periodically
-setInterval(loadLogFiles, 10000);
+// Refresh log files list periodically (more frequently when logs tab is active)
+let logFilesInterval = setInterval(loadLogFiles, 10000);
+
+// Increase refresh rate when logs tab is active
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tabName = btn.dataset.tab;
+    if (tabName === 'logs') {
+      // Refresh more frequently when logs tab is active
+      clearInterval(logFilesInterval);
+      logFilesInterval = setInterval(loadLogFiles, 5000);
+    } else {
+      // Normal refresh rate when other tabs are active
+      clearInterval(logFilesInterval);
+      logFilesInterval = setInterval(loadLogFiles, 10000);
+    }
+  });
+});
 
 // Health check and auto-recovery
 let healthCheckInterval = setInterval(async () => {
@@ -736,16 +935,305 @@ let healthCheckInterval = setInterval(async () => {
     // If we're supposed to be watching logs but connection is closed, reconnect
     if (document.getElementById('tab-logs').classList.contains('active')) {
       if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
-        console.log('Log stream disconnected, reconnecting...');
         startLogStream();
       }
     }
-    
-    // Log health status periodically
-    if (health.agents && health.agents.total > 0) {
-      console.debug(`Health: ${health.agents.total} agent(s) running (${health.agents.subProcesses} sub-processes)`);
-    }
   } catch (err) {
-    console.error('Health check failed:', err);
+    // Silently fail - will retry on next interval
   }
 }, 15000); // Every 15 seconds
+
+// User Tasks Functions
+async function loadUserTasks() {
+  try {
+    const res = await fetch(`${API_BASE}/user-tasks`);
+    const data = await res.json();
+    allUserTasks = data.tasks || [];
+    filterUserTasks();
+  } catch (err) {
+    userTasksContent.innerHTML = `<div style="color: #f85149;">Error loading user tasks: ${err.message}</div>`;
+  }
+}
+
+function filterUserTasks() {
+  const searchTerm = (userTaskSearch.value || '').toLowerCase();
+  const statusFilter = userTaskStatusFilter.value;
+  
+  filteredUserTasks = allUserTasks.filter(task => {
+    const matchesSearch = !searchTerm || 
+      task.id.toLowerCase().includes(searchTerm) ||
+      task.title.toLowerCase().includes(searchTerm) ||
+      (task.description && task.description.toLowerCase().includes(searchTerm));
+    
+    const matchesStatus = !statusFilter || task.status === statusFilter;
+    
+    return matchesSearch && matchesStatus;
+  });
+  
+  renderUserTasks();
+}
+
+function renderUserTasks() {
+  const tasksToRender = filteredUserTasks.length > 0 ? filteredUserTasks : allUserTasks;
+  
+  if (tasksToRender.length === 0) {
+    userTasksContent.innerHTML = '<div style="color: #8b949e; text-align: center; padding: 40px;">No user tasks found. Create one to get started!</div>';
+    return;
+  }
+  
+  userTasksContent.innerHTML = tasksToRender.map(task => {
+    const createdAt = new Date(task.createdAt).toLocaleString();
+    const statusClass = task.status.toLowerCase().replace('_', '-');
+    const reviewBadge = task.reviewStatus ? `<span class="review-badge ${task.reviewStatus}">${task.reviewStatus}</span>` : '';
+    const agentBadge = task.createdBy === 'agent' ? `<span class="agent-badge" title="Created by ${task.sourceAgent || 'agent'}">🤖 Agent</span>` : '';
+    
+    return `
+      <div class="user-task-item" data-task-id="${task.id}">
+        <div class="user-task-header">
+          <div>
+            <span class="user-task-id">${task.id}</span>
+            <span class="user-task-status ${statusClass}">${task.status}</span>
+            ${agentBadge}
+            ${reviewBadge}
+          </div>
+          <div class="user-task-actions">
+            ${task.status === 'PENDING' || task.status === 'ASSIGNED' ? `<button class="btn-icon assign-btn" data-task-id="${task.id}" title="Assign to agent">🚀</button>` : ''}
+            ${task.status === 'COMPLETED' && !task.reviewStatus ? `<button class="btn-icon review-btn" data-task-id="${task.id}" title="Review">✓</button>` : ''}
+            ${task.status !== 'IN_PROGRESS' ? `<button class="btn-icon edit-btn" data-task-id="${task.id}" title="Edit">✏️</button>` : ''}
+            <button class="btn-icon delete-btn" data-task-id="${task.id}" title="Delete">🗑️</button>
+          </div>
+        </div>
+        <div class="user-task-title">${escapeHtml(task.title)}</div>
+        ${task.description ? `<div class="user-task-description">${escapeHtml(task.description)}</div>` : ''}
+        <div class="user-task-meta">
+          <span class="user-task-priority">Priority: ${task.priority}</span>
+          <span>Created: ${createdAt}</span>
+          ${task.assignedAt ? `<span>Assigned: ${new Date(task.assignedAt).toLocaleString()}</span>` : ''}
+          ${task.completedAt ? `<span>Completed: ${new Date(task.completedAt).toLocaleString()}</span>` : ''}
+        </div>
+        ${task.reviewNotes ? `<div class="user-task-review-notes"><strong>Review:</strong> ${escapeHtml(task.reviewNotes)}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+  
+  // Add event listeners
+  document.querySelectorAll('.assign-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      assignUserTask(btn.dataset.taskId);
+    });
+  });
+  
+  document.querySelectorAll('.review-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showReviewModal(btn.dataset.taskId);
+    });
+  });
+  
+  document.querySelectorAll('.edit-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      editUserTask(btn.dataset.taskId);
+    });
+  });
+  
+  document.querySelectorAll('.delete-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteUserTask(btn.dataset.taskId);
+    });
+  });
+}
+
+async function assignUserTask(taskId) {
+  if (!confirm('Assign this task to an agent?')) return;
+  
+  try {
+    const res = await fetch(`${API_BASE}/user-tasks/${taskId}/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    
+    const data = await res.json();
+    if (res.ok) {
+      showToast('Task assigned to agent', 'success');
+      loadUserTasks();
+    } else {
+      showToast(`Error: ${data.error}`, 'error');
+    }
+  } catch (err) {
+    showToast(`Failed to assign task: ${err.message}`, 'error');
+  }
+}
+
+async function deleteUserTask(taskId) {
+  if (!confirm('Delete this task? This cannot be undone.')) return;
+  
+  try {
+    const res = await fetch(`${API_BASE}/user-tasks/${taskId}`, {
+      method: 'DELETE'
+    });
+    
+    const data = await res.json();
+    if (res.ok) {
+      showToast('Task deleted', 'success');
+      loadUserTasks();
+    } else {
+      showToast(`Error: ${data.error}`, 'error');
+    }
+  } catch (err) {
+    showToast(`Failed to delete task: ${err.message}`, 'error');
+  }
+}
+
+function showCreateUserTaskModal() {
+  document.getElementById('user-task-modal-title').textContent = 'Create User Task';
+  userTaskForm.reset();
+  userTaskForm.dataset.taskId = '';
+  userTaskModal.classList.add('active');
+}
+
+function editUserTask(taskId) {
+  const task = allUserTasks.find(t => t.id === taskId);
+  if (!task) return;
+  
+  document.getElementById('user-task-modal-title').textContent = 'Edit User Task';
+  document.getElementById('user-task-title').value = task.title;
+  document.getElementById('user-task-description').value = task.description || '';
+  document.getElementById('user-task-priority').value = task.priority;
+  document.getElementById('user-task-assign').checked = false;
+  userTaskForm.dataset.taskId = taskId;
+  userTaskModal.classList.add('active');
+}
+
+function showReviewModal(taskId) {
+  const task = allUserTasks.find(t => t.id === taskId);
+  if (!task) return;
+  
+  currentReviewTaskId = taskId;
+  document.getElementById('review-task-info').innerHTML = `
+    <div class="review-task-header">
+      <h3>${escapeHtml(task.title)}</h3>
+      <p><strong>ID:</strong> ${task.id}</p>
+      ${task.description ? `<p><strong>Description:</strong> ${escapeHtml(task.description)}</p>` : ''}
+    </div>
+  `;
+  document.getElementById('review-status').value = task.reviewStatus || 'approved';
+  document.getElementById('review-notes').value = task.reviewNotes || '';
+  userTaskReviewModal.classList.add('active');
+}
+
+async function submitReview() {
+  if (!currentReviewTaskId) return;
+  
+  const status = document.getElementById('review-status').value;
+  const notes = document.getElementById('review-notes').value;
+  
+  try {
+    const res = await fetch(`${API_BASE}/user-tasks/${currentReviewTaskId}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, notes })
+    });
+    
+    const data = await res.json();
+    if (res.ok) {
+      showToast('Review submitted', 'success');
+      userTaskReviewModal.classList.remove('active');
+      currentReviewTaskId = null;
+      loadUserTasks();
+    } else {
+      showToast(`Error: ${data.error}`, 'error');
+    }
+  } catch (err) {
+    showToast(`Failed to submit review: ${err.message}`, 'error');
+  }
+}
+
+// Event listeners for user tasks
+btnCreateUserTask.addEventListener('click', showCreateUserTaskModal);
+btnRefreshUserTasks.addEventListener('click', loadUserTasks);
+userTaskSearch.addEventListener('input', debounce(filterUserTasks, 300));
+userTaskStatusFilter.addEventListener('change', filterUserTasks);
+
+userTaskForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  
+  const title = document.getElementById('user-task-title').value;
+  const description = document.getElementById('user-task-description').value;
+  const priority = document.getElementById('user-task-priority').value;
+  const assignToAgent = document.getElementById('user-task-assign').checked;
+  const taskId = userTaskForm.dataset.taskId;
+  
+  try {
+    let res;
+    if (taskId) {
+      // Update existing task
+      res = await fetch(`${API_BASE}/user-tasks/${taskId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, description, priority, assignToAgent })
+      });
+    } else {
+      // Create new task
+      res = await fetch(`${API_BASE}/user-tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, description, priority, assignToAgent })
+      });
+    }
+    
+    const data = await res.json();
+    if (res.ok) {
+      showToast(taskId ? 'Task updated' : 'Task created', 'success');
+      userTaskModal.classList.remove('active');
+      loadUserTasks();
+      
+      // If assigned, offer to start agent
+      if (assignToAgent && !taskId) {
+        if (confirm('Task created and assigned. Start agent now?')) {
+          btnStart.click();
+        }
+      }
+    } else {
+      showToast(`Error: ${data.error}`, 'error');
+    }
+  } catch (err) {
+    showToast(`Failed to save task: ${err.message}`, 'error');
+  }
+});
+
+userTaskCancel.addEventListener('click', () => {
+  userTaskModal.classList.remove('active');
+});
+
+userTaskModalClose.addEventListener('click', () => {
+  userTaskModal.classList.remove('active');
+});
+
+userTaskModal.addEventListener('click', (e) => {
+  if (e.target === userTaskModal) {
+    userTaskModal.classList.remove('active');
+  }
+});
+
+reviewCancel.addEventListener('click', () => {
+  userTaskReviewModal.classList.remove('active');
+  currentReviewTaskId = null;
+});
+
+userTaskReviewClose.addEventListener('click', () => {
+  userTaskReviewModal.classList.remove('active');
+  currentReviewTaskId = null;
+});
+
+reviewSubmit.addEventListener('click', submitReview);
+
+userTaskReviewModal.addEventListener('click', (e) => {
+  if (e.target === userTaskReviewModal) {
+    userTaskReviewModal.classList.remove('active');
+    currentReviewTaskId = null;
+  }
+});

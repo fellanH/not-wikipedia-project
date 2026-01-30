@@ -20,50 +20,68 @@ You are executing a task from the Not-Wikipedia project ROADMAP.md. Follow the s
 ---
 
 
-## Current Task: 2.1 - Fix Silent DB Errors in wiki-create-article.ts
+## Current Task: 1.6 - Unit Tests for wiki-git-publish.ts
 
-### 2.1 Fix Silent DB Errors in wiki-create-article.ts
+### 1.6 Unit Tests for wiki-git-publish.ts
 
 **Status**: `IN_PROGRESS`
-**Priority**: P0
+**Priority**: P1
 **Effort**: Low
-**Dependencies**: 1.3 (tests first)
+**Dependencies**: 1.1
 
 **Specification**:
-- Replace `console.error` with proper error throws
-- Add transaction-like behavior for create → register → discover
-- Implement rollback if any step fails
+- Test git command construction
+- Test commit message generation
+- Test push error handling
+- Mock execSync for isolation
 
-**Files to Modify**:
-- `local-agent/lib/mcp/src/tools/wiki-create-article.ts` (lines 194-209)
+**Files to Create**:
+- `local-agent/lib/mcp/src/__tests__/tools/wiki-git-publish.test.ts`
 
-**Current Code** (problematic):
+**Test Cases**:
 ```typescript
-try {
-  db.registerArticle(...)
-} catch (e) {
-  console.error('Failed to register:', e)  // Silent failure!
-}
-```
+describe('wiki-git-publish', () => {
+  describe('commit operations', () => {
+    it('stages all changes in wiki directory')
+    it('generates descriptive commit message')
+    it('handles empty commits gracefully')
+  })
 
-**Target Code**:
-```typescript
-try {
-  db.registerArticle(...)
-} catch (e) {
-  // Rollback: delete the file we just created
-  await fs.unlink(filePath)
-  throw new Error(`Article creation failed: ${e.message}`)
-}
+  describe('push operations', () => {
+    it('pushes to origin on success')
+    it('handles push failures gracefully')
+    it('reports partial success (commit ok, push failed)')
+  })
+})
 ```
 
 **Acceptance Criteria**:
-- [ ] DB errors propagate to caller
-- [ ] Failed articles are cleaned up
-- [ ] Error messages are descriptive
-- [ ] Existing tests still pass
+- [ ] Git commands verified via mocks
+- [ ] Error handling tested
+- [ ] Coverage > 80% for wiki-git-publish.ts
 
 ---
+
+---
+
+## Creating User Tasks
+
+If during task execution you identify follow-up work, improvements, or related tasks that should be tracked, you can create user tasks using:
+
+```bash
+# Create a user task (will be picked up by agents)
+# Path is relative to project root
+./roadmap-dashboard/create-user-task.sh "Task Title" "Description" [PRIORITY] [--assign]
+
+# Examples:
+./roadmap-dashboard/create-user-task.sh "Add tests for feature X" "Add unit tests for the new feature" P3
+./roadmap-dashboard/create-user-task.sh "Refactor Y component" "Refactor for better maintainability" P5 --assign
+```
+
+User tasks will be automatically processed by agents in future runs. Use this for:
+- Follow-up improvements identified during implementation
+- Related work that should be tracked separately
+- Tasks that emerge from the current work but aren't part of the original spec
 
 ---
 
@@ -72,13 +90,13 @@ try {
 When you have completed all the acceptance criteria, respond with:
 
 ```
-TASK_COMPLETE: 2.1
+TASK_COMPLETE: 1.6
 ```
 
 If you encounter a blocker that prevents completion, respond with:
 
 ```
-TASK_BLOCKED: 2.1
+TASK_BLOCKED: 1.6
 REASON: <description of the blocker>
 ```
 

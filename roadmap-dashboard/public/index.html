@@ -80,6 +80,7 @@
         <button class="tab-btn" data-tab="prompt">ROADMAP_PROMPT.md</button>
         <button class="tab-btn" data-tab="logs">Logs</button>
         <button class="tab-btn" data-tab="tasks">Tasks</button>
+        <button class="tab-btn" data-tab="user-tasks">User Tasks</button>
       </div>
 
       <div class="tab-content active" id="tab-roadmap">
@@ -153,6 +154,25 @@
         </div>
         <div id="tasks-content" class="tasks-content"></div>
       </div>
+
+      <div class="tab-content" id="tab-user-tasks">
+        <div class="content-header">
+          <h2>User Tasks</h2>
+          <div class="user-task-controls">
+            <button id="btn-create-user-task" class="btn btn-primary">+ New Task</button>
+            <input type="text" id="user-task-search" placeholder="Search tasks..." class="search-input">
+            <select id="user-task-status-filter" class="filter-select">
+              <option value="">All Statuses</option>
+              <option value="PENDING">Pending</option>
+              <option value="ASSIGNED">Assigned</option>
+              <option value="IN_PROGRESS">In Progress</option>
+              <option value="COMPLETED">Completed</option>
+            </select>
+            <button id="btn-refresh-user-tasks" class="btn btn-sm">Refresh</button>
+          </div>
+        </div>
+        <div id="user-tasks-content" class="user-tasks-content"></div>
+      </div>
     </div>
   </div>
 
@@ -165,6 +185,79 @@
       </div>
       <div class="modal-body">
         <div id="modal-task-content"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- User Task Create/Edit Modal -->
+  <div id="user-task-modal" class="modal">
+    <div class="modal-content modal-large">
+      <div class="modal-header">
+        <h2 id="user-task-modal-title">Create User Task</h2>
+        <button class="modal-close" id="user-task-modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="user-task-form">
+          <div class="form-group">
+            <label for="user-task-title">Title *</label>
+            <input type="text" id="user-task-title" required class="form-input" placeholder="Enter task title">
+          </div>
+          <div class="form-group">
+            <label for="user-task-description">Description</label>
+            <textarea id="user-task-description" class="form-textarea" rows="5" placeholder="Enter task description and requirements"></textarea>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="user-task-priority">Priority</label>
+              <select id="user-task-priority" class="form-select">
+                <option value="P0">P0 - Critical</option>
+                <option value="P1">P1 - High</option>
+                <option value="P2">P2 - Medium-High</option>
+                <option value="P3">P3 - Medium</option>
+                <option value="P4">P4 - Medium-Low</option>
+                <option value="P5" selected>P5 - Low</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="user-task-assign"> Assign to agent immediately
+              </label>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" id="user-task-cancel" class="btn btn-secondary">Cancel</button>
+            <button type="submit" class="btn btn-primary">Create Task</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- User Task Review Modal -->
+  <div id="user-task-review-modal" class="modal">
+    <div class="modal-content modal-large">
+      <div class="modal-header">
+        <h2>Review Task</h2>
+        <button class="modal-close" id="user-task-review-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="review-task-info"></div>
+        <div class="form-group">
+          <label for="review-status">Review Status</label>
+          <select id="review-status" class="form-select">
+            <option value="approved">Approved</option>
+            <option value="needs_revision">Needs Revision</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="review-notes">Review Notes</label>
+          <textarea id="review-notes" class="form-textarea" rows="4" placeholder="Add review comments..."></textarea>
+        </div>
+        <div class="form-actions">
+          <button type="button" id="review-cancel" class="btn btn-secondary">Cancel</button>
+          <button type="button" id="review-submit" class="btn btn-primary">Submit Review</button>
+        </div>
       </div>
     </div>
   </div>
