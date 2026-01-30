@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Not-Wikipedia is an autonomous article generation system that creates a fictional encyclopedia. The system uses Claude Code agents (orchestrated by `ralph.sh`) to generate Wikipedia-style HTML articles driven by human seed passages (literary quotes).
 
-**Live site**: https://not-wikipedia.vercel.app
+**Live site**: https://not-wikipedia.org
 
 ## Repository Structure
 
