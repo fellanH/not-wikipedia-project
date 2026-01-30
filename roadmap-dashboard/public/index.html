@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Roadmap Agent Dashboard</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 </head>
 <body>
   <div class="container">
@@ -102,8 +105,19 @@
             <select id="log-select">
               <option value="live">Live Stream</option>
             </select>
+            <input type="text" id="log-search" placeholder="Search logs..." class="search-input">
+            <select id="log-level-filter" class="filter-select">
+              <option value="">All Levels</option>
+              <option value="stdout">Stdout</option>
+              <option value="stderr">Stderr</option>
+              <option value="info">Info</option>
+              <option value="success">Success</option>
+              <option value="warn">Warning</option>
+              <option value="error">Error</option>
+            </select>
             <span id="log-source-indicator" class="log-source-indicator"></span>
             <button id="btn-clear-logs" class="btn btn-sm">Clear</button>
+            <button id="btn-export-logs" class="btn btn-sm">Export</button>
           </div>
         </div>
         <div id="logs-content" class="logs-content"></div>
@@ -112,12 +126,51 @@
       <div class="tab-content" id="tab-tasks">
         <div class="content-header">
           <h2>Task List</h2>
-          <button id="btn-refresh-tasks" class="btn btn-sm">Refresh</button>
+          <div class="task-controls">
+            <input type="text" id="task-search" placeholder="Search tasks..." class="search-input">
+            <select id="task-status-filter" class="filter-select">
+              <option value="">All Statuses</option>
+              <option value="DONE">Done</option>
+              <option value="IN_PROGRESS">In Progress</option>
+              <option value="PENDING">Pending</option>
+              <option value="BLOCKED">Blocked</option>
+            </select>
+            <select id="task-priority-filter" class="filter-select">
+              <option value="">All Priorities</option>
+              <option value="P0">P0</option>
+              <option value="P1">P1</option>
+              <option value="P2">P2</option>
+              <option value="P3">P3</option>
+              <option value="P4">P4</option>
+              <option value="P5">P5</option>
+              <option value="P6">P6</option>
+              <option value="P7">P7</option>
+              <option value="P8">P8</option>
+              <option value="P9">P9</option>
+            </select>
+            <button id="btn-refresh-tasks" class="btn btn-sm">Refresh</button>
+          </div>
         </div>
         <div id="tasks-content" class="tasks-content"></div>
       </div>
     </div>
   </div>
+
+  <!-- Task Detail Modal -->
+  <div id="task-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-task-id"></h2>
+        <button class="modal-close" id="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="modal-task-content"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast"></div>
 
   <script src="app.js"></script>
 </body>

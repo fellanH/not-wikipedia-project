@@ -4,9 +4,9 @@
 
 **Last Updated**: 2025-01-30
 **Total Tasks**:       35
-**Completed**: 5
+**Completed**: 6
 **In Progress**: 2
-**Pending**: 28
+**Pending**: 27
 
 ---
 
@@ -373,7 +373,7 @@ jobs:
 
 ### 2.1 Fix Silent DB Errors in wiki-create-article.ts
 
-**Status**: `PENDING`
+**Status**: `DONE`
 **Priority**: P0
 **Effort**: Low
 **Dependencies**: 1.3 (tests first)

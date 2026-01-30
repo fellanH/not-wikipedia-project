@@ -160,12 +160,49 @@ async function findRunningAgents() {
 // Verify process is still running
 async function verifyProcess(pid) {
   try {
-    await execAsync(`kill -0 ${pid}`);
+    await execAsync(`kill -0 ${pid} 2>/dev/null`);
     return true;
   } catch (err) {
     return false;
   }
 }
+
+// Health check endpoint
+app.get('/api/health', async (req, res) => {
+  try {
+    const allAgents = await findRunningAgents();
+    const verifiedAgents = [];
+    
+    for (const agent of allAgents) {
+      if (await verifyProcess(agent.pid)) {
+        verifiedAgents.push(agent);
+      }
+    }
+    
+    const activeFiles = await getActiveLogFiles(600000);
+    
+    res.json({
+      status: 'healthy',
+      timestamp: Date.now(),
+      agents: {
+        total: verifiedAgents.length,
+        main: verifiedAgents.filter(a => !a.isSubProcess).length,
+        subProcesses: verifiedAgents.filter(a => a.isSubProcess).length
+      },
+      logs: {
+        activeFiles: activeFiles.filter(f => f.isActive).length,
+        totalFiles: activeFiles.length
+      },
+      watchers: logWatchers.size
+    });
+  } catch (err) {
+    res.status(500).json({
+      status: 'error',
+      error: err.message,
+      timestamp: Date.now()
+    });
+  }
+});
 
 // Get the most recent running agent PID
 async function getExternalAgentPid() {
@@ -273,30 +310,62 @@ app.get('/api/prompt', async (req, res) => {
   }
 });
 
-// Get list of log files
+// Get list of log files with metadata
 app.get('/api/logs', async (req, res) => {
   try {
     await fs.mkdir(LOG_DIR, { recursive: true });
     const files = await fs.readdir(LOG_DIR);
+    const now = Date.now();
     const logFiles = files
       .filter(f => f.endsWith('.log'))
       .map(f => {
         const filepath = path.join(LOG_DIR, f);
-        const stats = fsSync.statSync(filepath);
-        return {
-          filename: f,
-          size: stats.size,
-          mtime: stats.mtime.getTime()
-        };
+        try {
+          const stats = fsSync.statSync(filepath);
+          const age = now - stats.mtime.getTime();
+          return {
+            filename: f,
+            size: stats.size,
+            mtime: stats.mtime.getTime(),
+            age,
+            isActive: age < 600000, // Active if modified in last 10 minutes
+            formattedAge: formatAge(age)
+          };
+        } catch (err) {
+          return null;
+        }
       })
+      .filter(f => f !== null)
       .sort((a, b) => b.mtime - a.mtime)
-      .slice(0, 20); // Latest 20
+      .slice(0, 50); // Latest 50
     
-    res.json({ logs: logFiles.map(f => f.filename) });
+    res.json({ 
+      logs: logFiles.map(f => f.filename),
+      metadata: logFiles.reduce((acc, f) => {
+        acc[f.filename] = {
+          size: f.size,
+          mtime: f.mtime,
+          age: f.age,
+          isActive: f.isActive,
+          formattedAge: f.formattedAge
+        };
+        return acc;
+      }, {})
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+function formatAge(ms) {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) return `${hours}h ago`;
+  if (minutes > 0) return `${minutes}m ago`;
+  return `${seconds}s ago`;
+}
 
 // Get the latest active log file (most recently modified)
 app.get('/api/logs/latest', async (req, res) => {
@@ -664,42 +733,49 @@ app.get('/api/stream', (req, res) => {
 
   // Send initial status (check for external agents too)
   (async () => {
+    const allAgents = await findRunningAgents();
     const externalPid = await getExternalAgentPid();
     const isRunning = agentProcess !== null && !agentProcess.killed;
     const hasExternal = externalPid !== null && (!isRunning || externalPid !== agentProcess.pid);
     
+    // Separate main and sub-processes
+    const mainAgents = allAgents.filter(a => !a.isSubProcess);
+    const subAgents = allAgents.filter(a => a.isSubProcess);
+    
     sendEvent('status', {
       running: isRunning || hasExternal,
       pid: isRunning ? agentProcess.pid : (hasExternal ? externalPid : null),
-      isExternal: hasExternal && !isRunning
+      isExternal: hasExternal && !isRunning,
+      allAgents: allAgents.map(a => ({ pid: a.pid, comm: a.comm, isSubProcess: a.isSubProcess })),
+      subAgents: subAgents.map(a => ({ pid: a.pid, comm: a.comm }))
     });
     
-    // If external agent, start watching latest log file
-    if (hasExternal) {
+    // Watch active log files for external agents
+    if (hasExternal || isRunning) {
       try {
-        const files = await fs.readdir(LOG_DIR);
-        const logFiles = files
-          .filter(f => f.endsWith('.log'))
-          .map(f => {
-            const filepath = path.join(LOG_DIR, f);
-            try {
-              const stats = fsSync.statSync(filepath);
-              return {
-                filename: f,
-                mtime: stats.mtime.getTime()
-              };
-            } catch (err) {
-              return null;
-            }
-          })
-          .filter(f => f !== null)
-          .sort((a, b) => b.mtime - a.mtime);
+        const activeFiles = await getActiveLogFiles(600000); // 10 minutes
+        const activeLogFiles = activeFiles.filter(f => f.isActive);
         
-        if (logFiles.length > 0) {
-          watchLogFile(logFiles[0].filename, res, req);
+        if (activeLogFiles.length > 0) {
+          // Watch the most recent active log file
+          watchLogFile(activeLogFiles[0].filename, res, req);
+          
+          // If there are multiple active files, send info about them
+          if (activeLogFiles.length > 1) {
+            sendEvent('log', {
+              type: 'info',
+              data: `[Multiple active log files detected: ${activeLogFiles.length}]\n`
+            });
+          }
+        } else {
+          // No active files, try latest file anyway
+          const latestFiles = await getActiveLogFiles(3600000); // 1 hour
+          if (latestFiles.length > 0) {
+            watchLogFile(latestFiles[0].filename, res, req);
+          }
         }
       } catch (err) {
-        console.error('Error getting latest log:', err);
+        console.error('Error setting up log watching:', err);
       }
     }
   })();
@@ -798,6 +874,57 @@ app.get('/api/tasks', async (req, res) => {
   }
 });
 
+// Cleanup on exit
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, cleaning up...');
+  // Stop all log watchers
+  for (const [res, { filepath, watcher }] of logWatchers.entries()) {
+    try {
+      fsSync.unwatchFile(filepath, watcher);
+    } catch (err) {
+      // Ignore cleanup errors
+    }
+  }
+  logWatchers.clear();
+  
+  // Kill managed agent process
+  if (agentProcess && !agentProcess.killed) {
+    agentProcess.kill('SIGTERM');
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, cleaning up...');
+  // Stop all log watchers
+  for (const [res, { filepath, watcher }] of logWatchers.entries()) {
+    try {
+      fsSync.unwatchFile(filepath, watcher);
+    } catch (err) {
+      // Ignore cleanup errors
+    }
+  }
+  logWatchers.clear();
+  
+  // Kill managed agent process
+  if (agentProcess && !agentProcess.killed) {
+    agentProcess.kill('SIGTERM');
+  }
+  process.exit(0);
+});
+
+// Handle uncaught errors gracefully
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+  // Don't exit, keep server running
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection at:', promise, 'reason:', reason);
+  // Don't exit, keep server running
+});
+
 app.listen(PORT, () => {
   console.log(`Roadmap Dashboard server running on http://localhost:${PORT}`);
+  console.log(`Health check: http://localhost:${PORT}/api/health`);
 });

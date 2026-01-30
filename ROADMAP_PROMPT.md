@@ -20,53 +20,48 @@ You are executing a task from the Not-Wikipedia project ROADMAP.md. Follow the s
 ---
 
 
-## Current Task: 1.3 - Unit Tests for wiki-create-article.ts
+## Current Task: 2.1 - Fix Silent DB Errors in wiki-create-article.ts
 
-### 1.3 Unit Tests for wiki-create-article.ts
+### 2.1 Fix Silent DB Errors in wiki-create-article.ts
 
 **Status**: `IN_PROGRESS`
 **Priority**: P0
-**Effort**: Medium
-**Dependencies**: 1.1
+**Effort**: Low
+**Dependencies**: 1.3 (tests first)
 
 **Specification**:
-- Test HTML generation from markdown
-- Test infobox rendering
-- Test database registration
-- Test error handling paths
+- Replace `console.error` with proper error throws
+- Add transaction-like behavior for create → register → discover
+- Implement rollback if any step fails
 
-**Files to Create**:
-- `local-agent/lib/mcp/src/__tests__/tools/wiki-create-article.test.ts`
+**Files to Modify**:
+- `local-agent/lib/mcp/src/tools/wiki-create-article.ts` (lines 194-209)
 
-**Test Cases**:
+**Current Code** (problematic):
 ```typescript
-describe('wiki-create-article', () => {
-  describe('HTML generation', () => {
-    it('generates valid HTML structure')
-    it('escapes special characters in content')
-    it('renders infobox with correct color')
-    it('generates proper internal links')
-  })
+try {
+  db.registerArticle(...)
+} catch (e) {
+  console.error('Failed to register:', e)  // Silent failure!
+}
+```
 
-  describe('database registration', () => {
-    it('inserts article record on success')
-    it('inserts link records for all hrefs')
-    it('handles duplicate article gracefully')
-  })
-
-  describe('error handling', () => {
-    it('throws on invalid file path')
-    it('throws on malformed markdown')
-    it('propagates database errors')
-  })
-})
+**Target Code**:
+```typescript
+try {
+  db.registerArticle(...)
+} catch (e) {
+  // Rollback: delete the file we just created
+  await fs.unlink(filePath)
+  throw new Error(`Article creation failed: ${e.message}`)
+}
 ```
 
 **Acceptance Criteria**:
-- [ ] HTML generation tested with various inputs
-- [ ] Database operations mocked and verified
-- [ ] Error paths have explicit tests
-- [ ] Coverage > 80% for wiki-create-article.ts
+- [ ] DB errors propagate to caller
+- [ ] Failed articles are cleaned up
+- [ ] Error messages are descriptive
+- [ ] Existing tests still pass
 
 ---
 
@@ -77,13 +72,13 @@ describe('wiki-create-article', () => {
 When you have completed all the acceptance criteria, respond with:
 
 ```
-TASK_COMPLETE: 1.3
+TASK_COMPLETE: 2.1
 ```
 
 If you encounter a blocker that prevents completion, respond with:
 
 ```
-TASK_BLOCKED: 1.3
+TASK_BLOCKED: 2.1
 REASON: <description of the blocker>
 ```
 
