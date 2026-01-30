@@ -4,9 +4,9 @@
 
 **Last Updated**: 2025-01-30
 **Total Tasks**:       35
-**Completed**: 4
+**Completed**: 5
 **In Progress**: 2
-**Pending**: 29
+**Pending**: 28
 
 ---
 
@@ -60,7 +60,7 @@ npm install -D vitest @vitest/coverage-v8
 
 ### 1.2 Unit Tests for wiki-next-task.ts
 
-**Status**: `PENDING`
+**Status**: `BLOCKED`
 **Priority**: P0
 **Effort**: Medium
 **Dependencies**: 1.1
@@ -108,7 +108,7 @@ describe('wiki-next-task', () => {
 
 ### 1.3 Unit Tests for wiki-create-article.ts
 
-**Status**: `PENDING`
+**Status**: `DONE`
 **Priority**: P0
 **Effort**: Medium
 **Dependencies**: 1.1

@@ -4,6 +4,7 @@
   "description": "Wikipedia-style article generation system",
   "scripts": {
     "dashboard": "node local-agent/lib/dashboard/server.js",
+    "roadmap-dashboard": "node roadmap-dashboard/server.js",
     "ralph": "cd local-agent/lib/agent && ./ralph.sh",
     "build": "cd local-agent/lib/mcp && npm run build",
     "publish": "cd local-agent/lib/agent && node -e \"require('../mcp/dist/tools/wiki-git-publish.js').tool.handler({}).then(r=>console.log(r.content[0].text))\"",
@@ -13,6 +14,9 @@
     "roadmap:status": "./roadmap-agent.sh --status",
     "roadmap:list": "./roadmap-agent.sh --list",
     "roadmap:dry": "./roadmap-agent.sh --dry-run --single"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
   },
   "private": true
 }

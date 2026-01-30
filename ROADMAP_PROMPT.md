@@ -20,37 +20,53 @@ You are executing a task from the Not-Wikipedia project ROADMAP.md. Follow the s
 ---
 
 
-## Current Task: 1.1 - Add Vitest Test Framework
+## Current Task: 1.3 - Unit Tests for wiki-create-article.ts
 
-### 1.1 Add Vitest Test Framework
+### 1.3 Unit Tests for wiki-create-article.ts
 
 **Status**: `IN_PROGRESS`
 **Priority**: P0
-**Effort**: Low
-**Dependencies**: None
+**Effort**: Medium
+**Dependencies**: 1.1
 
 **Specification**:
-- Install Vitest as dev dependency in `local-agent/lib/mcp/`
-- Configure `vitest.config.ts` for TypeScript support
-- Add test scripts to `package.json`
-- Create `src/__tests__/` directory structure
+- Test HTML generation from markdown
+- Test infobox rendering
+- Test database registration
+- Test error handling paths
 
-**Files to Create/Modify**:
-- `local-agent/lib/mcp/package.json` - Add vitest dependency and scripts
-- `local-agent/lib/mcp/vitest.config.ts` - New file
-- `local-agent/lib/mcp/src/__tests__/.gitkeep` - New directory
+**Files to Create**:
+- `local-agent/lib/mcp/src/__tests__/tools/wiki-create-article.test.ts`
+
+**Test Cases**:
+```typescript
+describe('wiki-create-article', () => {
+  describe('HTML generation', () => {
+    it('generates valid HTML structure')
+    it('escapes special characters in content')
+    it('renders infobox with correct color')
+    it('generates proper internal links')
+  })
+
+  describe('database registration', () => {
+    it('inserts article record on success')
+    it('inserts link records for all hrefs')
+    it('handles duplicate article gracefully')
+  })
+
+  describe('error handling', () => {
+    it('throws on invalid file path')
+    it('throws on malformed markdown')
+    it('propagates database errors')
+  })
+})
+```
 
 **Acceptance Criteria**:
-- [ ] `npm test` runs Vitest
-- [ ] `npm run test:watch` runs in watch mode
-- [ ] `npm run test:coverage` generates coverage report
-- [ ] TypeScript files can be tested without compilation step
-
-**Implementation Notes**:
-```bash
-cd local-agent/lib/mcp
-npm install -D vitest @vitest/coverage-v8
-```
+- [ ] HTML generation tested with various inputs
+- [ ] Database operations mocked and verified
+- [ ] Error paths have explicit tests
+- [ ] Coverage > 80% for wiki-create-article.ts
 
 ---
 
@@ -61,13 +77,13 @@ npm install -D vitest @vitest/coverage-v8
 When you have completed all the acceptance criteria, respond with:
 
 ```
-TASK_COMPLETE: 1.1
+TASK_COMPLETE: 1.3
 ```
 
 If you encounter a blocker that prevents completion, respond with:
 
 ```
-TASK_BLOCKED: 1.1
+TASK_BLOCKED: 1.3
 REASON: <description of the blocker>
 ```
 
