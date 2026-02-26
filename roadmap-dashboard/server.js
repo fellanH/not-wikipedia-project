@@ -12,7 +12,8 @@ const logger = require('./logger');
 const execAsync = promisify(exec);
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = parseInt(process.env.PORT, 10) || 3001;
+const HOST = process.env.HOST || '127.0.0.1';
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const ROADMAP_FILE = path.join(PROJECT_ROOT, 'ROADMAP.md');
 const PROMPT_FILE = path.join(PROJECT_ROOT, 'ROADMAP_PROMPT.md');
@@ -20,34 +21,110 @@ const LOG_DIR = path.join(PROJECT_ROOT, 'roadmap-logs');
 const AGENT_SCRIPT = path.join(PROJECT_ROOT, 'roadmap-agent.sh');
 const USER_TASKS_FILE = path.join(PROJECT_ROOT, '.roadmap-user-tasks.json');
 
-// Agent process management
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',')
+  : ['http://localhost:3001', 'http://127.0.0.1:3001'];
+
 let agentProcess = null;
 const agentEvents = new EventEmitter();
 
-// Process detection cache (5 second TTL)
 const processCache = {
   data: null,
   timestamp: 0,
   ttl: 5000
 };
 
-// Get process info with better parsing
+const rateLimitMap = new Map();
+const RATE_LIMIT_WINDOW = 60000;
+const RATE_LIMIT_MAX = 100;
+
+let server = null;
+let isShuttingDown = false;
+const activeConnections = new Set();
+
+function validatePid(pid) {
+  const parsed = parseInt(pid, 10);
+  if (Number.isNaN(parsed) || parsed < 1 || parsed > 4194304 || String(parsed) !== String(pid)) {
+    return null;
+  }
+  return parsed;
+}
+
+function validateFilename(filename) {
+  if (!filename || typeof filename !== 'string') {
+    return null;
+  }
+  const sanitized = path.basename(filename);
+  if (sanitized !== filename || sanitized.includes('..') || !sanitized.endsWith('.log')) {
+    return null;
+  }
+  if (!/^[a-zA-Z0-9._-]+\.log$/.test(sanitized)) {
+    return null;
+  }
+  return sanitized;
+}
+
+function sanitizeString(str, maxLength = 1000) {
+  if (!str || typeof str !== 'string') return '';
+  return str.slice(0, maxLength).replace(/[<>]/g, '');
+}
+
+function rateLimit(req, res, next) {
+  if (isShuttingDown) {
+    return res.status(503).json({ error: 'Server shutting down' });
+  }
+
+  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  const now = Date.now();
+
+  if (!rateLimitMap.has(ip)) {
+    rateLimitMap.set(ip, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
+    return next();
+  }
+
+  const record = rateLimitMap.get(ip);
+  if (now > record.resetTime) {
+    record.count = 1;
+    record.resetTime = now + RATE_LIMIT_WINDOW;
+    return next();
+  }
+
+  record.count++;
+  if (record.count > RATE_LIMIT_MAX) {
+    res.set('Retry-After', Math.ceil((record.resetTime - now) / 1000));
+    return res.status(429).json({ error: 'Too many requests' });
+  }
+
+  next();
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of rateLimitMap.entries()) {
+    if (now > record.resetTime) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 60000);
+
 async function getProcessInfo(pid) {
+  const validPid = validatePid(pid);
+  if (!validPid) return null;
+
   try {
-    // Use ps with more reliable format
-    const { stdout } = await execAsync(`ps -p ${pid} -o pid=,ppid=,pgid=,comm=,etime=,args= 2>/dev/null || echo ""`);
+    const { stdout } = await execAsync(`ps -p ${validPid} -o pid=,ppid=,pgid=,comm=,etime=,args= 2>/dev/null || echo ""`);
     if (!stdout.trim()) return null;
-    
+
     const parts = stdout.trim().split(/\s+/);
     if (parts.length < 5) return null;
-    
+
     const procPid = parseInt(parts[0]);
     const ppid = parseInt(parts[1]) || null;
     const pgid = parseInt(parts[2]) || null;
     const comm = parts[3] || '';
     const etime = parts[4] || '';
     const args = parts.slice(5).join(' ') || '';
-    
+
     return {
       pid: procPid,
       ppid,
@@ -62,20 +139,17 @@ async function getProcessInfo(pid) {
   }
 }
 
-// Check if a process is an agent-related process
 function isAgentProcess(proc) {
   if (!proc) return false;
-  
+
   const scriptName = path.basename(AGENT_SCRIPT);
   const cmdLower = proc.cmd.toLowerCase();
   const argsLower = proc.args.toLowerCase();
-  
-  // Main agent script
+
   if (cmdLower.includes(scriptName) || argsLower.includes(scriptName)) {
     return true;
   }
-  
-  // Claude processes with roadmap-related arguments
+
   if (proc.comm === 'claude' || proc.comm.includes('claude')) {
     const roadmapIndicators = [
       'roadmap',
@@ -87,86 +161,83 @@ function isAgentProcess(proc) {
     ];
     return roadmapIndicators.some(indicator => argsLower.includes(indicator));
   }
-  
+
   return false;
 }
 
-// Get process tree (parent and all children) with improved detection
 async function getProcessTree(pid, visited = new Set(), depth = 0) {
-  if (visited.has(pid) || !pid || depth > 10) return [];
-  
-  visited.add(pid);
+  const validPid = validatePid(pid);
+  if (!validPid || visited.has(validPid) || depth > 10) return [];
+
+  visited.add(validPid);
   const processes = [];
-  
-  const proc = await getProcessInfo(pid);
+
+  const proc = await getProcessInfo(validPid);
   if (!proc) return [];
-  
+
   processes.push(proc);
-  
-  // Find children using pgrep (more reliable than ps)
+
   try {
-    const { stdout } = await execAsync(`pgrep -P ${pid} 2>/dev/null || echo ""`);
+    const { stdout } = await execAsync(`pgrep -P ${validPid} 2>/dev/null || echo ""`);
     const children = stdout.trim()
       .split('\n')
       .filter(c => c)
       .map(c => parseInt(c))
       .filter(p => !Number.isNaN(p));
-    
+
     for (const childPid of children) {
       const childProcs = await getProcessTree(childPid, visited, depth + 1);
       processes.push(...childProcs);
     }
   } catch (err) {
-    // No children or error finding them
+    logger.debug('Error getting process children:', err.message);
   }
-  
+
   return processes;
 }
 
-// Find running agent processes including sub-processes (with caching)
 async function findRunningAgents(forceRefresh = false) {
   const now = Date.now();
-  
-  // Return cached data if still valid
+
   if (!forceRefresh && processCache.data && (now - processCache.timestamp) < processCache.ttl) {
     return processCache.data;
   }
-  
+
   try {
     const scriptName = path.basename(AGENT_SCRIPT);
     const allProcesses = [];
     const visitedPids = new Set();
-    
-    // Strategy 1: Find processes by script name/path
+
     const candidatePids = new Set();
-    
+
     try {
-      // Find bash processes running the agent script
       const { stdout: bashOut } = await execAsync(
         `ps aux | grep -E "[b]ash.*${scriptName}|[b]ash.*roadmap-agent" | grep -v grep || echo ""`
       );
       const bashLines = bashOut.trim().split('\n').filter(l => l.trim());
       bashLines.forEach(line => {
         const match = line.match(/^\S+\s+(\d+)/);
-        if (match) candidatePids.add(parseInt(match[1]));
+        if (match) {
+          const pid = validatePid(match[1]);
+          if (pid) candidatePids.add(pid);
+        }
       });
     } catch (err) {
-      // Ignore errors
+      logger.debug('Error finding bash processes:', err.message);
     }
-    
-    // Strategy 2: Find by process group (if agent creates one)
+
     try {
       const { stdout: pgrepOut } = await execAsync(
         `pgrep -f "${scriptName}" 2>/dev/null || echo ""`
       );
-      pgrepOut.trim().split('\n').filter(p => p).forEach(pid => {
-        candidatePids.add(parseInt(pid));
+      pgrepOut.trim().split('\n').filter(p => p).forEach(p => {
+        const pid = validatePid(p);
+        if (pid) candidatePids.add(pid);
       });
     } catch (err) {
-      // Ignore errors
+      logger.debug('Error with pgrep:', err.message);
     }
-    
-    // Strategy 3: Find claude processes that might be agents
+
     try {
       const { stdout: claudeOut } = await execAsync(
         `ps aux | grep -E "[c]laude.*roadmap|[c]laude.*PROMPT|[c]laude.*task-" | grep -v grep || echo ""`
@@ -174,35 +245,33 @@ async function findRunningAgents(forceRefresh = false) {
       const claudeLines = claudeOut.trim().split('\n').filter(l => l.trim());
       claudeLines.forEach(line => {
         const match = line.match(/^\S+\s+(\d+)/);
-        if (match) candidatePids.add(parseInt(match[1]));
+        if (match) {
+          const pid = validatePid(match[1]);
+          if (pid) candidatePids.add(pid);
+        }
       });
     } catch (err) {
-      // Ignore errors
+      logger.debug('Error finding claude processes:', err.message);
     }
-    
-    // Build process trees for all candidates
+
     for (const pid of candidatePids) {
       if (visitedPids.has(pid)) continue;
-      
+
       try {
         const tree = await getProcessTree(pid, visitedPids);
-        // Filter to only agent-related processes
         const agentProcs = tree.filter(p => isAgentProcess(p));
         allProcesses.push(...agentProcs);
       } catch (err) {
-        // Try to at least get the main process
         const proc = await getProcessInfo(pid);
         if (proc && isAgentProcess(proc)) {
           allProcesses.push(proc);
         }
       }
     }
-    
-    // Deduplicate and categorize
+
     const unique = new Map();
     const mainAgentPids = new Set();
-    
-    // First pass: identify main agents
+
     for (const proc of allProcesses) {
       const scriptNameLower = scriptName.toLowerCase();
       const cmdLower = proc.cmd.toLowerCase();
@@ -210,14 +279,13 @@ async function findRunningAgents(forceRefresh = false) {
         mainAgentPids.add(proc.pid);
       }
     }
-    
-    // Second pass: categorize all processes
+
     for (const proc of allProcesses) {
       if (!unique.has(proc.pid)) {
         const isMain = mainAgentPids.has(proc.pid);
         const isSub = !isMain && (proc.comm === 'claude' || proc.comm.includes('claude'));
         const isExternal = !agentProcess || proc.pid !== agentProcess.pid;
-        
+
         unique.set(proc.pid, {
           pid: proc.pid,
           ppid: proc.ppid,
@@ -232,13 +300,12 @@ async function findRunningAgents(forceRefresh = false) {
         });
       }
     }
-    
+
     const result = Array.from(unique.values());
-    
-    // Update cache
+
     processCache.data = result;
     processCache.timestamp = now;
-    
+
     return result;
   } catch (err) {
     logger.error('Failed to find running agents:', err.message);
@@ -246,46 +313,63 @@ async function findRunningAgents(forceRefresh = false) {
   }
 }
 
-// Verify process is still running and is still an agent
 async function verifyProcess(pid) {
+  const validPid = validatePid(pid);
+  if (!validPid) return false;
+
   try {
-    // Check if process exists
-    await execAsync(`kill -0 ${pid} 2>/dev/null`);
-    
-    // Verify it's still an agent process
-    const proc = await getProcessInfo(pid);
+    await execAsync(`kill -0 ${validPid} 2>/dev/null`);
+    const proc = await getProcessInfo(validPid);
     return proc && isAgentProcess(proc);
   } catch (err) {
     return false;
   }
 }
 
-// Verify multiple processes efficiently
 async function verifyProcesses(agents) {
-  const verified = [];
   const checkPromises = agents.map(async (agent) => {
     const isValid = await verifyProcess(agent.pid);
     return isValid ? agent : null;
   });
-  
+
   const results = await Promise.all(checkPromises);
   return results.filter(a => a !== null);
 }
 
-// Health check endpoint
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'X-XSS-Protection': '1; mode=block',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data:; font-src 'self';"
+  });
+  next();
+});
+
 app.get('/api/health', async (req, res) => {
   try {
-    const allAgents = await findRunningAgents(true); // Force refresh for health check
+    const allAgents = await findRunningAgents(true);
     const verifiedAgents = await verifyProcesses(allAgents);
-    
+
     const activeFiles = await getActiveLogFiles(600000);
-    
+
     const mainAgents = verifiedAgents.filter(a => a.isMainProcess);
     const subAgents = verifiedAgents.filter(a => a.isSubProcess);
-    
+
+    let roadmapReadable = false;
+    try {
+      await fs.access(ROADMAP_FILE, fsSync.constants.R_OK);
+      roadmapReadable = true;
+    } catch (err) {
+      logger.warn('ROADMAP.md not readable');
+    }
+
     res.json({
-      status: 'healthy',
+      status: roadmapReadable ? 'healthy' : 'degraded',
       timestamp: Date.now(),
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
       agents: {
         total: verifiedAgents.length,
         main: mainAgents.length,
@@ -297,9 +381,13 @@ app.get('/api/health', async (req, res) => {
         totalFiles: activeFiles.length
       },
       watchers: logWatchers.size,
-      cacheAge: Date.now() - processCache.timestamp
+      cacheAge: Date.now() - processCache.timestamp,
+      dependencies: {
+        roadmapFile: roadmapReadable
+      }
     });
   } catch (err) {
+    logger.error('Health check failed:', err.message);
     res.status(500).json({
       status: 'error',
       error: err.message,
@@ -308,19 +396,16 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// Get the most recent running agent PID
 async function getExternalAgentPid() {
   const agents = await findRunningAgents();
   if (agents.length === 0) return null;
-  
-  // Verify processes are still running
+
   const verifiedAgents = await verifyProcesses(agents);
   if (verifiedAgents.length === 0) return null;
-  
-  // Prefer main processes, then external, then any
+
   const mainAgents = verifiedAgents.filter(a => a.isMainProcess);
   const externalAgents = verifiedAgents.filter(a => a.isExternal);
-  
+
   if (mainAgents.length > 0) {
     return mainAgents[0].pid;
   }
@@ -330,93 +415,99 @@ async function getExternalAgentPid() {
   return verifiedAgents[0].pid;
 }
 
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(rateLimit);
 
-// CORS for development
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
   res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
   next();
 });
 
-// Get agent status
 app.get('/api/status', async (req, res) => {
-  const isRunning = agentProcess !== null && !agentProcess.killed;
-  const allAgents = await findRunningAgents();
-  
-  // Verify all agents are still running
-  const verifiedAgents = await verifyProcesses(allAgents);
-  
-  const externalPid = await getExternalAgentPid();
-  const hasExternalAgent = externalPid !== null && (!isRunning || externalPid !== agentProcess.pid);
-  
-  // Separate sub-processes
-  const subAgents = verifiedAgents.filter(a => a.isSubProcess);
-  
-  // Parse ROADMAP.md for task counts
-  let stats = {
-    total: 0,
-    done: 0,
-    inProgress: 0,
-    pending: 0,
-    blocked: 0
-  };
-
   try {
-    const content = await fs.readFile(ROADMAP_FILE, 'utf-8');
-    
-    // Extract header stats
-    const headerMatch = content.match(/\*\*Total Tasks\*\*:\s*(\d+)/);
-    if (headerMatch) stats.total = parseInt(headerMatch[1]);
-    
-    stats.done = (content.match(/`DONE`/g) || []).length;
-    stats.inProgress = (content.match(/`IN_PROGRESS`/g) || []).length;
-    stats.blocked = (content.match(/`BLOCKED`/g) || []).length;
-    stats.pending = stats.total - stats.done - stats.inProgress - stats.blocked;
-  } catch (err) {
-    logger.warn('Failed to read ROADMAP.md:', err.message);
-  }
+    const isRunning = agentProcess !== null && !agentProcess.killed;
+    const allAgents = await findRunningAgents();
 
-  res.json({
-    running: isRunning || hasExternalAgent,
-    pid: isRunning ? agentProcess.pid : (hasExternalAgent ? externalPid : null),
-    isExternal: hasExternalAgent && !isRunning,
-    externalAgents: verifiedAgents
-      .filter(a => a.isExternal || !isRunning)
-      .map(a => ({ 
-        pid: a.pid, 
-        cmd: a.cmd,
+    const verifiedAgents = await verifyProcesses(allAgents);
+
+    const externalPid = await getExternalAgentPid();
+    const hasExternalAgent = externalPid !== null && (!isRunning || externalPid !== agentProcess.pid);
+
+    const subAgents = verifiedAgents.filter(a => a.isSubProcess);
+
+    let stats = {
+      total: 0,
+      done: 0,
+      inProgress: 0,
+      pending: 0,
+      blocked: 0
+    };
+
+    try {
+      const content = await fs.readFile(ROADMAP_FILE, 'utf-8');
+
+      const headerMatch = content.match(/\*\*Total Tasks\*\*:\s*(\d+)/);
+      if (headerMatch) stats.total = parseInt(headerMatch[1]);
+
+      stats.done = (content.match(/`DONE`/g) || []).length;
+      stats.inProgress = (content.match(/`IN_PROGRESS`/g) || []).length;
+      stats.blocked = (content.match(/`BLOCKED`/g) || []).length;
+      stats.pending = stats.total - stats.done - stats.inProgress - stats.blocked;
+    } catch (err) {
+      logger.warn('Failed to read ROADMAP.md:', err.message);
+    }
+
+    res.json({
+      running: isRunning || hasExternalAgent,
+      pid: isRunning ? agentProcess.pid : (hasExternalAgent ? externalPid : null),
+      isExternal: hasExternalAgent && !isRunning,
+      externalAgents: verifiedAgents
+        .filter(a => a.isExternal || !isRunning)
+        .map(a => ({
+          pid: a.pid,
+          cmd: sanitizeString(a.cmd, 200),
+          comm: a.comm,
+          isSubProcess: a.isSubProcess,
+          isMainProcess: a.isMainProcess
+        })),
+      allAgents: verifiedAgents.map(a => ({
+        pid: a.pid,
         comm: a.comm,
         isSubProcess: a.isSubProcess,
-        isMainProcess: a.isMainProcess
+        isMainProcess: a.isMainProcess,
+        isExternal: a.isExternal
       })),
-    allAgents: verifiedAgents.map(a => ({
-      pid: a.pid,
-      comm: a.comm,
-      isSubProcess: a.isSubProcess,
-      isMainProcess: a.isMainProcess,
-      isExternal: a.isExternal
-    })),
-    subAgents: subAgents.map(a => ({
-      pid: a.pid,
-      comm: a.comm
-    })),
-    stats
-  });
+      subAgents: subAgents.map(a => ({
+        pid: a.pid,
+        comm: a.comm
+      })),
+      stats
+    });
+  } catch (err) {
+    logger.error('Status endpoint error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// Get ROADMAP.md content
 app.get('/api/roadmap', async (req, res) => {
   try {
     const content = await fs.readFile(ROADMAP_FILE, 'utf-8');
     res.json({ content });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to read roadmap:', err.message);
+    res.status(500).json({ error: 'Failed to read roadmap file' });
   }
 });
 
-// Get ROADMAP_PROMPT.md content
 app.get('/api/prompt', async (req, res) => {
   try {
     const content = await fs.readFile(PROMPT_FILE, 'utf-8');
@@ -425,41 +516,37 @@ app.get('/api/prompt', async (req, res) => {
     if (err.code === 'ENOENT') {
       res.json({ content: '# ROADMAP_PROMPT.md\n\n*File not yet generated. Run a task to generate this file.*' });
     } else {
-      res.status(500).json({ error: err.message });
+      logger.error('Failed to read prompt:', err.message);
+      res.status(500).json({ error: 'Failed to read prompt file' });
     }
   }
 });
 
-// Extract task ID from log filename
 function extractTaskIdFromLog(filename) {
   const match = filename.match(/^task-([0-9]+\.[0-9]+)-/);
   return match ? match[1] : null;
 }
 
-// Get list of log files with metadata and process associations
 app.get('/api/logs', async (req, res) => {
   try {
     await fs.mkdir(LOG_DIR, { recursive: true });
     const files = await fs.readdir(LOG_DIR);
     const now = Date.now();
-    
-    // Get running agents to match with log files
+
     const runningAgents = await findRunningAgents(true);
     const verifiedAgents = await verifyProcesses(runningAgents);
-    
-    // Create a map of task IDs to processes (if we can infer from command line)
+
     const taskToProcessMap = new Map();
     verifiedAgents.forEach(agent => {
-      // Try to extract task ID from command line arguments
-      const taskMatch = agent.cmd.match(/task[_-]?([0-9]+\.[0-9]+)/i) || 
+      const taskMatch = agent.cmd.match(/task[_-]?([0-9]+\.[0-9]+)/i) ||
                        agent.args.match(/task[_-]?([0-9]+\.[0-9]+)/i);
       if (taskMatch) {
         taskToProcessMap.set(taskMatch[1], agent);
       }
     });
-    
+
     const logFiles = files
-      .filter(f => f.endsWith('.log'))
+      .filter(f => f.endsWith('.log') && validateFilename(f))
       .map(f => {
         const filepath = path.join(LOG_DIR, f);
         try {
@@ -467,11 +554,10 @@ app.get('/api/logs', async (req, res) => {
           const age = now - stats.mtime.getTime();
           const taskId = extractTaskIdFromLog(f);
           const associatedProcess = taskId ? taskToProcessMap.get(taskId) : null;
-          
-          // Check if file is currently being written to (more accurate than just mtime)
-          const isActive = age < 600000; // Active if modified in last 10 minutes
-          const isCurrentlyActive = age < 30000; // Very active if modified in last 30 seconds
-          
+
+          const isActive = age < 600000;
+          const isCurrentlyActive = age < 30000;
+
           return {
             filename: f,
             size: stats.size,
@@ -490,7 +576,6 @@ app.get('/api/logs', async (req, res) => {
       })
       .filter(f => f !== null)
       .sort((a, b) => {
-        // Sort by: currently active first, then active, then by mtime
         if (a.isCurrentlyActive !== b.isCurrentlyActive) {
           return b.isCurrentlyActive - a.isCurrentlyActive;
         }
@@ -499,9 +584,9 @@ app.get('/api/logs', async (req, res) => {
         }
         return b.mtime - a.mtime;
       })
-      .slice(0, 100); // Latest 100
-    
-    res.json({ 
+      .slice(0, 100);
+
+    res.json({
       logs: logFiles.map(f => f.filename),
       metadata: logFiles.reduce((acc, f) => {
         acc[f.filename] = {
@@ -519,7 +604,8 @@ app.get('/api/logs', async (req, res) => {
       }, {})
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to list logs:', err.message);
+    res.status(500).json({ error: 'Failed to list log files' });
   }
 });
 
@@ -527,19 +613,18 @@ function formatAge(ms) {
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
-  
+
   if (hours > 0) return `${hours}h ago`;
   if (minutes > 0) return `${minutes}m ago`;
   return `${seconds}s ago`;
 }
 
-// Get the latest active log file (most recently modified)
 app.get('/api/logs/latest', async (req, res) => {
   try {
     await fs.mkdir(LOG_DIR, { recursive: true });
     const files = await fs.readdir(LOG_DIR);
     const logFiles = files
-      .filter(f => f.endsWith('.log'))
+      .filter(f => f.endsWith('.log') && validateFilename(f))
       .map(f => {
         const filepath = path.join(LOG_DIR, f);
         try {
@@ -555,36 +640,43 @@ app.get('/api/logs/latest', async (req, res) => {
       })
       .filter(f => f !== null)
       .sort((a, b) => b.mtime - a.mtime);
-    
+
     if (logFiles.length === 0) {
       return res.json({ filename: null });
     }
-    
+
     res.json({ filename: logFiles[0].filename });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to get latest log:', err.message);
+    res.status(500).json({ error: 'Failed to get latest log file' });
   }
 });
 
-// Get specific log file content with metadata
 app.get('/api/logs/:filename', async (req, res) => {
   try {
-    const filename = req.params.filename;
+    const filename = validateFilename(req.params.filename);
+    if (!filename) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
     const filepath = path.join(LOG_DIR, filename);
-    
-    // Check if file exists
+
+    const realPath = await fs.realpath(filepath).catch(() => null);
+    const realLogDir = await fs.realpath(LOG_DIR).catch(() => LOG_DIR);
+    if (!realPath || !realPath.startsWith(realLogDir)) {
+      return res.status(400).json({ error: 'Invalid file path' });
+    }
+
     if (!fsSync.existsSync(filepath)) {
       return res.status(404).json({ error: 'Log file not found' });
     }
-    
+
     const stats = fsSync.statSync(filepath);
-    const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB limit
-    
-    // Check file size and warn if too large
+    const MAX_FILE_SIZE = 50 * 1024 * 1024;
+
     let content;
     let truncated = false;
     if (stats.size > MAX_FILE_SIZE) {
-      // Read only the last portion of very large files
       const fd = fsSync.openSync(filepath, 'r');
       const buffer = Buffer.alloc(Math.min(MAX_FILE_SIZE, stats.size));
       const startPos = Math.max(0, stats.size - MAX_FILE_SIZE);
@@ -596,16 +688,15 @@ app.get('/api/logs/:filename', async (req, res) => {
     } else {
       content = await fs.readFile(filepath, 'utf-8');
     }
-    
+
     const taskId = extractTaskIdFromLog(filename);
-    
-    // Try to find associated process
+
     let associatedProcess = null;
     if (taskId) {
       const runningAgents = await findRunningAgents(true);
       const verifiedAgents = await verifyProcesses(runningAgents);
       const taskMatch = verifiedAgents.find(agent => {
-        const match = agent.cmd.match(/task[_-]?([0-9]+\.[0-9]+)/i) || 
+        const match = agent.cmd.match(/task[_-]?([0-9]+\.[0-9]+)/i) ||
                      agent.args.match(/task[_-]?([0-9]+\.[0-9]+)/i);
         return match && match[1] === taskId;
       });
@@ -613,12 +704,12 @@ app.get('/api/logs/:filename', async (req, res) => {
         associatedProcess = {
           pid: taskMatch.pid,
           comm: taskMatch.comm,
-          cmd: taskMatch.cmd
+          cmd: sanitizeString(taskMatch.cmd, 200)
         };
       }
     }
-    
-    res.json({ 
+
+    res.json({
       content: truncated ? `[File truncated - showing last ${(MAX_FILE_SIZE / 1024 / 1024).toFixed(2)}MB of ${(stats.size / 1024 / 1024).toFixed(2)}MB]\n${content}` : content,
       metadata: {
         filename,
@@ -634,30 +725,26 @@ app.get('/api/logs/:filename', async (req, res) => {
     if (err.code === 'ENOENT') {
       res.status(404).json({ error: 'Log file not found' });
     } else {
-      res.status(500).json({ error: `Failed to read log file: ${err.message}` });
+      res.status(500).json({ error: 'Failed to read log file' });
     }
   }
 });
 
-// Invalidate process cache
 function invalidateProcessCache() {
   processCache.data = null;
   processCache.timestamp = 0;
 }
 
-// Start agent
 app.post('/api/agent/start', async (req, res) => {
   if (agentProcess && !agentProcess.killed) {
     return res.status(400).json({ error: 'Agent is already running (managed by this dashboard)' });
   }
 
-  // Invalidate cache before checking
   invalidateProcessCache();
-  
-  // Check for external agents
+
   const externalPid = await getExternalAgentPid();
   if (externalPid) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       error: `Agent is already running externally (PID: ${externalPid}). Stop it first or use the existing process.`,
       externalPid
     });
@@ -668,15 +755,21 @@ app.post('/api/agent/start', async (req, res) => {
 
   if (single) args.push('--single');
   if (task) {
-    args.push('--task', task);
-    args.push('--single');
+    const sanitizedTask = sanitizeString(task, 50).replace(/[^a-zA-Z0-9._-]/g, '');
+    if (sanitizedTask) {
+      args.push('--task', sanitizedTask);
+      args.push('--single');
+    }
   }
   if (!autoCommit) args.push('--no-commit');
 
+  const sanitizedMaxLoops = parseInt(maxLoops, 10) || 0;
+  const sanitizedLoopDelay = parseInt(loopDelay, 10) || 5;
+
   const env = {
     ...process.env,
-    MAX_LOOPS: maxLoops || 0,
-    LOOP_DELAY: loopDelay || 5,
+    MAX_LOOPS: String(Math.max(0, Math.min(sanitizedMaxLoops, 1000))),
+    LOOP_DELAY: String(Math.max(1, Math.min(sanitizedLoopDelay, 300))),
     AUTO_COMMIT: autoCommit !== false ? 'true' : 'false'
   };
 
@@ -697,114 +790,108 @@ app.post('/api/agent/start', async (req, res) => {
   const currentProcess = agentProcess;
   agentProcess.on('exit', (code) => {
     agentEvents.emit('exit', { code });
-    // Only clear if this is still the current process (not replaced by a new start)
     if (agentProcess === currentProcess) {
       agentProcess = null;
     }
-    invalidateProcessCache(); // Clear cache when agent exits
+    invalidateProcessCache();
   });
 
   agentEvents.emit('start', { pid: agentProcess.pid });
-  invalidateProcessCache(); // Clear cache when agent starts
+  invalidateProcessCache();
 
-  res.json({ 
-    success: true, 
+  logger.info(`Agent started with PID ${agentProcess.pid}`);
+  res.json({
+    success: true,
     pid: agentProcess.pid,
     message: 'Agent started'
   });
 });
 
-// Stop agent
 app.post('/api/agent/stop', async (req, res) => {
   const { externalPid } = req.body;
-  
-  // Invalidate cache before stopping
+
   invalidateProcessCache();
-  
-  // If external PID provided, try to stop that process and its children
+
   if (externalPid) {
+    const validPid = validatePid(externalPid);
+    if (!validPid) {
+      return res.status(400).json({ error: 'Invalid PID format' });
+    }
+
     try {
-      // Check if process exists
-      await execAsync(`kill -0 ${externalPid}`);
-      
-      // Get process group to kill entire tree
-      const proc = await getProcessInfo(externalPid);
-      if (proc && proc.pgid) {
-        // Try to kill process group (more reliable for killing children)
+      await execAsync(`kill -0 ${validPid} 2>/dev/null`);
+
+      const proc = await getProcessInfo(validPid);
+      if (!proc || !isAgentProcess(proc)) {
+        return res.status(400).json({ error: 'Process is not an agent process' });
+      }
+
+      if (proc.pgid) {
         try {
-          await execAsync(`kill -TERM -${proc.pgid} 2>/dev/null || kill -TERM ${externalPid}`);
+          await execAsync(`kill -TERM -${proc.pgid} 2>/dev/null || kill -TERM ${validPid}`);
         } catch (err) {
-          // Fallback to just the PID
-          await execAsync(`kill -TERM ${externalPid}`);
+          await execAsync(`kill -TERM ${validPid}`);
         }
       } else {
-        // Send SIGTERM to process and its children
-        await execAsync(`pkill -TERM -P ${externalPid} 2>/dev/null || true`);
-        await execAsync(`kill -TERM ${externalPid}`);
+        await execAsync(`pkill -TERM -P ${validPid} 2>/dev/null || true`);
+        await execAsync(`kill -TERM ${validPid}`);
       }
-      
-      // Force kill after 5 seconds
+
       setTimeout(async () => {
         try {
-          await execAsync(`kill -0 ${externalPid}`);
-          if (proc && proc.pgid) {
-            await execAsync(`kill -KILL -${proc.pgid} 2>/dev/null || kill -KILL ${externalPid}`);
+          await execAsync(`kill -0 ${validPid} 2>/dev/null`);
+          if (proc.pgid) {
+            await execAsync(`kill -KILL -${proc.pgid} 2>/dev/null || kill -KILL ${validPid}`);
           } else {
-            await execAsync(`pkill -KILL -P ${externalPid} 2>/dev/null || true`);
-            await execAsync(`kill -KILL ${externalPid}`);
+            await execAsync(`pkill -KILL -P ${validPid} 2>/dev/null || true`);
+            await execAsync(`kill -KILL ${validPid}`);
           }
         } catch (err) {
-          // Process already dead, ignore
+          // Process already dead
         }
-        invalidateProcessCache(); // Clear cache after force kill
+        invalidateProcessCache();
       }, 5000);
-      
-      invalidateProcessCache(); // Clear cache after stop signal
-      return res.json({ success: true, message: `Stop signal sent to external agent (PID: ${externalPid})` });
+
+      logger.info(`Stop signal sent to external agent PID ${validPid}`);
+      invalidateProcessCache();
+      return res.json({ success: true, message: `Stop signal sent to external agent (PID: ${validPid})` });
     } catch (err) {
-      return res.status(404).json({ error: `Process ${externalPid} not found or already stopped` });
+      return res.status(404).json({ error: `Process ${validPid} not found or already stopped` });
     }
   }
-  
-  // Stop our managed process
+
   if (!agentProcess || agentProcess.killed) {
     return res.status(400).json({ error: 'No agent process managed by this dashboard' });
   }
 
   const processToKill = agentProcess;
   agentProcess.kill('SIGTERM');
-  
-  // Clear the reference immediately so we can start again
+
   agentProcess = null;
-  
-  // Force kill after 5 seconds if still running
+
   setTimeout(() => {
     if (processToKill && !processToKill.killed) {
       processToKill.kill('SIGKILL');
     }
-    invalidateProcessCache(); // Clear cache after force kill
+    invalidateProcessCache();
   }, 5000);
 
-  invalidateProcessCache(); // Clear cache after stop signal
+  logger.info('Agent stop signal sent');
+  invalidateProcessCache();
   res.json({ success: true, message: 'Agent stop signal sent' });
 });
 
-// Watch a log file and stream updates
 const logWatchers = new Map();
-const activeLogFiles = new Map(); // Track active log files per process
 
-// Get all active log files (recently modified) with process associations
-async function getActiveLogFiles(maxAge = 300000) { // 5 minutes default
+async function getActiveLogFiles(maxAge = 300000) {
   try {
     await fs.mkdir(LOG_DIR, { recursive: true });
     const files = await fs.readdir(LOG_DIR);
     const now = Date.now();
-    
-    // Get running agents to match with log files
+
     const runningAgents = await findRunningAgents(true);
     const verifiedAgents = await verifyProcesses(runningAgents);
-    
-    // Create a map of task IDs to processes
+
     const taskToProcessMap = new Map();
     verifiedAgents.forEach(agent => {
       const cmd = agent.cmd || '';
@@ -815,9 +902,9 @@ async function getActiveLogFiles(maxAge = 300000) { // 5 minutes default
         taskToProcessMap.set(taskMatch[1], agent);
       }
     });
-    
+
     const activeFiles = files
-      .filter(f => f.endsWith('.log'))
+      .filter(f => f.endsWith('.log') && validateFilename(f))
       .map(f => {
         const filepath = path.join(LOG_DIR, f);
         try {
@@ -825,7 +912,7 @@ async function getActiveLogFiles(maxAge = 300000) { // 5 minutes default
           const age = now - stats.mtime.getTime();
           const taskId = extractTaskIdFromLog(f);
           const associatedProcess = taskId ? taskToProcessMap.get(taskId) : null;
-          
+
           return {
             filename: f,
             filepath,
@@ -843,13 +930,12 @@ async function getActiveLogFiles(maxAge = 300000) { // 5 minutes default
       })
       .filter(f => f !== null)
       .sort((a, b) => {
-        // Sort by: active first, then by mtime
         if (a.isActive !== b.isActive) {
           return b.isActive - a.isActive;
         }
         return b.mtime - a.mtime;
       });
-    
+
     return activeFiles;
   } catch (err) {
     logger.error('Failed to get active log files:', err.message);
@@ -858,7 +944,12 @@ async function getActiveLogFiles(maxAge = 300000) { // 5 minutes default
 }
 
 function watchLogFile(filename, res, req, options = {}) {
-  const filepath = path.join(LOG_DIR, filename);
+  const validFilename = validateFilename(filename);
+  if (!validFilename) {
+    return;
+  }
+
+  const filepath = path.join(LOG_DIR, validFilename);
   let position = 0;
   let retryCount = 0;
   const maxRetries = 10;
@@ -867,41 +958,38 @@ function watchLogFile(filename, res, req, options = {}) {
   let isClosed = false;
   let lastModified = 0;
   let checkCount = 0;
-  
+
   const cleanup = () => {
-    if (isClosed) return; // Prevent double cleanup
+    if (isClosed) return;
     isClosed = true;
-    
+
     if (watcher) {
       try {
-        // Always try to unwatch, even if file doesn't exist
         fsSync.unwatchFile(filepath, watcher);
       } catch (err) {
-        // Ignore cleanup errors (file might not exist, watcher might already be removed)
         logger.debug('Cleanup unwatch error (expected):', err.message);
       }
     }
     logWatchers.delete(res);
   };
-  
+
   const sendContent = (content, isNew = false) => {
     if (isClosed || !content) return false;
-    
-    // Check if response is still writable
+
     if (res.destroyed || !res.writable || res.closed) {
       cleanup();
       return false;
     }
-    
+
     try {
       res.write(`event: log\n`);
-      res.write(`data: ${JSON.stringify({ 
-        type: 'file', 
+      res.write(`data: ${JSON.stringify({
+        type: 'file',
         data: content,
-        filename,
-        isNew 
+        filename: validFilename,
+        isNew
       })}\n\n`);
-      retryCount = 0; // Reset retry on success
+      retryCount = 0;
       return true;
     } catch (err) {
       logger.debug('Failed to send log content:', err.message);
@@ -909,43 +997,28 @@ function watchLogFile(filename, res, req, options = {}) {
       return false;
     }
   };
-  
-  // Check if file is actively being written (modified recently)
-  const isFileActive = () => {
-    try {
-      if (!fsSync.existsSync(filepath)) return false;
-      const stats = fsSync.statSync(filepath);
-      const now = Date.now();
-      const age = now - stats.mtime.getTime();
-      return age < 30000; // Active if modified in last 30 seconds
-    } catch (err) {
-      return false;
-    }
-  };
-  
-  // Send existing content
+
   const readExisting = () => {
     try {
       if (fsSync.existsSync(filepath)) {
         const stats = fsSync.statSync(filepath);
-        const MAX_INITIAL_SIZE = 10 * 1024 * 1024; // 10MB limit for initial read
-        
+        const MAX_INITIAL_SIZE = 10 * 1024 * 1024;
+
         let content;
         if (stats.size > MAX_INITIAL_SIZE) {
-          // For large files, only read the tail
           const fd = fsSync.openSync(filepath, 'r');
           const buffer = Buffer.alloc(Math.min(MAX_INITIAL_SIZE, stats.size));
           const startPos = Math.max(0, stats.size - MAX_INITIAL_SIZE);
           fsSync.readSync(fd, buffer, 0, buffer.length, startPos);
           fsSync.closeSync(fd);
           content = buffer.toString('utf-8');
-          position = stats.size; // Set position to end of file
-          logger.debug(`Log file ${filename} is large (${(stats.size / 1024 / 1024).toFixed(2)}MB), reading tail only`);
+          position = stats.size;
+          logger.debug(`Log file ${validFilename} is large (${(stats.size / 1024 / 1024).toFixed(2)}MB), reading tail only`);
         } else {
           content = fsSync.readFileSync(filepath, 'utf-8');
           position = content.length;
         }
-        
+
         lastModified = stats.mtime.getTime();
         if (content) {
           sendContent(content, false);
@@ -959,40 +1032,34 @@ function watchLogFile(filename, res, req, options = {}) {
       }
     }
   };
-  
+
   readExisting();
-  
-  // Watch for changes with error handling
+
   const startWatching = () => {
     if (isClosed) return;
-    
+
     try {
       if (!fsSync.existsSync(filepath)) {
-        // File doesn't exist yet, retry
         if (retryCount < maxRetries) {
           retryCount++;
           setTimeout(startWatching, 1000 * retryCount);
         } else {
-          sendContent(`[Log file ${filename} not found yet]\n`, true);
+          sendContent(`[Log file ${validFilename} not found yet]\n`, true);
         }
         return;
       }
-      
+
       watcher = fsSync.watchFile(filepath, { interval: watchInterval }, (curr, prev) => {
         if (isClosed) return;
-        
+
         try {
           checkCount++;
-          const now = Date.now();
-          const fileAge = now - curr.mtime.getTime();
-          const isActive = fileAge < 30000;
-          
+
           if (curr.size > prev.size || (prev.size === 0 && curr.size > 0)) {
-            // File grew or was created
             if (!fsSync.existsSync(filepath)) {
               return;
             }
-            
+
             const content = fsSync.readFileSync(filepath, 'utf-8');
             if (content.length > position) {
               const newContent = content.substring(position);
@@ -1002,7 +1069,6 @@ function watchLogFile(filename, res, req, options = {}) {
                 lastModified = curr.mtime.getTime();
               }
             } else if (content.length < position) {
-              // File was truncated or rotated, reset position
               sendContent(`[Log file rotated or truncated]\n`, true);
               position = 0;
               if (content) {
@@ -1012,7 +1078,6 @@ function watchLogFile(filename, res, req, options = {}) {
               }
             }
           } else if (curr.size < prev.size) {
-            // File was truncated
             sendContent(`[Log file truncated]\n`, true);
             position = 0;
             try {
@@ -1026,19 +1091,10 @@ function watchLogFile(filename, res, req, options = {}) {
               // Ignore read errors after truncation
             }
           }
-          
-          // Periodically check if we should switch to a more active file
-          // (every 20 checks, roughly every 10 seconds)
-          if (checkCount % 20 === 0 && !isActive) {
-            // File hasn't been modified recently, might want to switch
-            // But don't auto-switch, just log it
-            // The frontend can handle switching based on this info
-          }
         } catch (err) {
           if (err.code !== 'ENOENT') {
             logger.debug('Failed to read log file update:', err.message);
           }
-          // If file was deleted, try to find new one
           if (err.code === 'ENOENT' && retryCount < maxRetries) {
             retryCount++;
             setTimeout(() => {
@@ -1047,8 +1103,8 @@ function watchLogFile(filename, res, req, options = {}) {
           }
         }
       });
-      
-      logWatchers.set(res, { watcher, filepath, filename });
+
+      logWatchers.set(res, { watcher, filepath, filename: validFilename });
       retryCount = 0;
     } catch (err) {
       logger.warn('Failed to start file watch:', err.message);
@@ -1058,30 +1114,33 @@ function watchLogFile(filename, res, req, options = {}) {
       }
     }
   };
-  
+
   startWatching();
-  
+
   req.on('close', cleanup);
   req.on('error', cleanup);
 }
 
-// Server-Sent Events for real-time logs
 app.get('/api/stream', (req, res) => {
+  if (isShuttingDown) {
+    return res.status(503).json({ error: 'Server shutting down' });
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  res.setHeader('X-Accel-Buffering', 'no');
 
+  activeConnections.add(res);
   let isConnected = true;
-  
-  // Check if response is still writable
+
   const isWritable = () => {
-    return isConnected && !res.destroyed && res.writable && !res.closed;
+    return isConnected && !res.destroyed && res.writable && !res.closed && !isShuttingDown;
   };
 
   const sendEvent = (event, data) => {
     if (!isWritable()) return false;
-    
+
     try {
       res.write(`event: ${event}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -1093,7 +1152,6 @@ app.get('/api/stream', (req, res) => {
     }
   };
 
-  // Send heartbeat/ping every 30 seconds to keep connection alive
   const heartbeatInterval = setInterval(() => {
     if (!sendEvent('ping', { timestamp: Date.now() })) {
       clearInterval(heartbeatInterval);
@@ -1131,57 +1189,50 @@ app.get('/api/stream', (req, res) => {
   agentEvents.on('start', onStart);
   agentEvents.on('exit', onExit);
 
-  // Send initial status (check for external agents too)
   (async () => {
-    const allAgents = await findRunningAgents(true); // Force refresh for initial status
+    const allAgents = await findRunningAgents(true);
     const verifiedAgents = await verifyProcesses(allAgents);
     const externalPid = await getExternalAgentPid();
     const isRunning = agentProcess !== null && !agentProcess.killed;
     const hasExternal = externalPid !== null && (!isRunning || externalPid !== agentProcess.pid);
-    
-    // Separate sub-processes
+
     const subAgents = verifiedAgents.filter(a => a.isSubProcess);
-    
+
     sendEvent('status', {
       running: isRunning || hasExternal,
       pid: isRunning ? agentProcess.pid : (hasExternal ? externalPid : null),
       isExternal: hasExternal && !isRunning,
-      allAgents: verifiedAgents.map(a => ({ 
-        pid: a.pid, 
-        comm: a.comm, 
+      allAgents: verifiedAgents.map(a => ({
+        pid: a.pid,
+        comm: a.comm,
         isSubProcess: a.isSubProcess,
-        isMainProcess: a.isMainProcess 
+        isMainProcess: a.isMainProcess
       })),
       subAgents: subAgents.map(a => ({ pid: a.pid, comm: a.comm })),
       externalAgents: verifiedAgents
         .filter(a => a.isExternal || !isRunning)
-        .map(a => ({ pid: a.pid, cmd: a.cmd, comm: a.comm }))
+        .map(a => ({ pid: a.pid, cmd: sanitizeString(a.cmd, 200), comm: a.comm }))
     });
-    
-    // Watch active log files for external agents
+
     if (hasExternal || isRunning) {
       try {
-        // Check if we already have a watcher for this response
         if (!logWatchers.has(res)) {
-          const activeFiles = await getActiveLogFiles(600000); // 10 minutes
+          const activeFiles = await getActiveLogFiles(600000);
           const activeLogFiles = activeFiles.filter(f => f.isActive);
-          
+
           if (activeLogFiles.length > 0) {
-            // Prefer log files associated with running processes
             const processAssociatedFiles = activeLogFiles.filter(f => f.associatedPid);
-            const fileToWatch = processAssociatedFiles.length > 0 
-              ? processAssociatedFiles[0] 
+            const fileToWatch = processAssociatedFiles.length > 0
+              ? processAssociatedFiles[0]
               : activeLogFiles[0];
-            
+
             watchLogFile(fileToWatch.filename, res, req);
-            
-            // Send metadata about the watched file
+
             sendEvent('log', {
               type: 'info',
               data: `[Watching log: ${fileToWatch.filename}${fileToWatch.taskId ? ` (Task ${fileToWatch.taskId})` : ''}${fileToWatch.associatedPid ? ` - PID ${fileToWatch.associatedPid}` : ''}]\n`
             });
-            
-            // If there are multiple active files, send info about them
+
             if (activeLogFiles.length > 1) {
               sendEvent('log', {
                 type: 'info',
@@ -1189,8 +1240,7 @@ app.get('/api/stream', (req, res) => {
               });
             }
           } else {
-            // No active files, try latest file anyway
-            const latestFiles = await getActiveLogFiles(3600000); // 1 hour
+            const latestFiles = await getActiveLogFiles(3600000);
             if (latestFiles.length > 0) {
               watchLogFile(latestFiles[0].filename, res, req);
               sendEvent('log', {
@@ -1206,16 +1256,16 @@ app.get('/api/stream', (req, res) => {
     }
   })();
 
-  // Handle client disconnect
   const cleanup = () => {
-    if (!isConnected) return; // Already cleaned up
+    if (!isConnected) return;
     isConnected = false;
-    
+
+    activeConnections.delete(res);
     clearInterval(heartbeatInterval);
     agentEvents.removeListener('log', onLog);
     agentEvents.removeListener('start', onStart);
     agentEvents.removeListener('exit', onExit);
-    
+
     if (logWatchers.has(res)) {
       try {
         const { filepath, watcher } = logWatchers.get(res);
@@ -1223,7 +1273,6 @@ app.get('/api/stream', (req, res) => {
           fsSync.unwatchFile(filepath, watcher);
         }
       } catch (err) {
-        // Ignore cleanup errors
         logger.debug('Request close cleanup error:', err.message);
       }
       logWatchers.delete(res);
@@ -1236,41 +1285,247 @@ app.get('/api/stream', (req, res) => {
   res.on('finish', cleanup);
 });
 
-// Stream a specific log file
 app.get('/api/logs/:filename/stream', (req, res) => {
-  const filename = req.params.filename;
+  if (isShuttingDown) {
+    return res.status(503).json({ error: 'Server shutting down' });
+  }
+
+  const filename = validateFilename(req.params.filename);
+  if (!filename) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+
   const filepath = path.join(LOG_DIR, filename);
-  
+
   if (!fsSync.existsSync(filepath)) {
     return res.status(404).json({ error: 'Log file not found' });
   }
-  
+
+  activeConnections.add(res);
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  
+
   watchLogFile(filename, res, req);
+
+  res.on('close', () => activeConnections.delete(res));
 });
 
-// Get task details
+app.get('/api/logs/stats', async (req, res) => {
+  try {
+    await fs.mkdir(LOG_DIR, { recursive: true });
+    const files = await fs.readdir(LOG_DIR);
+    const logFiles = files.filter(f => f.endsWith('.log') && validateFilename(f));
+
+    let totalLines = 0;
+    let errorCount = 0;
+    let warnCount = 0;
+    let infoCount = 0;
+    let successCount = 0;
+    let totalSize = 0;
+    const firstTimestamps = [];
+    const lastTimestamps = [];
+
+    for (const filename of logFiles) {
+      const filepath = path.join(LOG_DIR, filename);
+      try {
+        const stats = fsSync.statSync(filepath);
+        totalSize += stats.size;
+
+        const content = await fs.readFile(filepath, 'utf-8');
+        const lines = content.split('\n');
+        totalLines += lines.length;
+
+        lines.forEach(line => {
+          if (/\b(error|exception|fatal|fail|✗|❌)\b/i.test(line)) {
+            errorCount++;
+          } else if (/\b(warn|warning|⚠)\b/i.test(line)) {
+            warnCount++;
+          } else if (/\b(info|→|ℹ)\b/i.test(line)) {
+            infoCount++;
+          } else if (/\b(success|✓|✅|completed)\b/i.test(line)) {
+            successCount++;
+          }
+        });
+
+        const timestampMatches = content.match(/\[(\d{2}:\d{2}:\d{2})\]/g);
+        if (timestampMatches && timestampMatches.length > 0) {
+          firstTimestamps.push(timestampMatches[0]);
+          lastTimestamps.push(timestampMatches[timestampMatches.length - 1]);
+        }
+      } catch (err) {
+        continue;
+      }
+    }
+
+    const errorRate = totalLines > 0 ? errorCount / totalLines : 0;
+
+    let linesPerSecond = 0;
+    if (logFiles.length > 0) {
+      const now = Date.now();
+      const fileAges = [];
+      for (const filename of logFiles) {
+        const filepath = path.join(LOG_DIR, filename);
+        try {
+          const stats = fsSync.statSync(filepath);
+          const ageSeconds = (now - stats.mtime.getTime()) / 1000;
+          if (ageSeconds > 0) {
+            fileAges.push(ageSeconds);
+          }
+        } catch (err) {
+          continue;
+        }
+      }
+      if (fileAges.length > 0) {
+        const avgAge = fileAges.reduce((a, b) => a + b, 0) / fileAges.length;
+        linesPerSecond = avgAge > 0 ? totalLines / avgAge : 0;
+      }
+    }
+
+    res.json({
+      totalLines,
+      errorCount,
+      warnCount,
+      infoCount,
+      successCount,
+      errorRate,
+      linesPerSecond,
+      totalSize,
+      fileCount: logFiles.length,
+      firstTimestamp: firstTimestamps.length > 0 ? firstTimestamps.sort()[0] : null,
+      lastTimestamp: lastTimestamps.length > 0 ? lastTimestamps.sort().reverse()[0] : null
+    });
+  } catch (err) {
+    logger.error('Failed to get log stats:', err.message);
+    res.status(500).json({ error: 'Failed to get log statistics' });
+  }
+});
+
+app.get('/api/logs/timeline', async (req, res) => {
+  try {
+    await fs.mkdir(LOG_DIR, { recursive: true });
+    const files = await fs.readdir(LOG_DIR);
+    const logFiles = files.filter(f => f.endsWith('.log') && validateFilename(f));
+
+    const runningAgents = await findRunningAgents(true);
+    const verifiedAgents = await verifyProcesses(runningAgents);
+
+    const workerLogs = new Map();
+
+    for (const filename of logFiles) {
+      const filepath = path.join(LOG_DIR, filename);
+      try {
+        const content = await fs.readFile(filepath, 'utf-8');
+        const lines = content.split('\n');
+
+        let workerId = 'unknown';
+        const taskMatch = filename.match(/task[_-]?([0-9]+\.[0-9]+)/i);
+        if (taskMatch) {
+          workerId = `task-${taskMatch[1]}`;
+        } else {
+          const matchingAgent = verifiedAgents.find(agent => {
+            const agentTaskMatch = agent.cmd.match(/task[_-]?([0-9]+\.[0-9]+)/i) ||
+                                   agent.args.match(/task[_-]?([0-9]+\.[0-9]+)/i);
+            return agentTaskMatch && filename.includes(agentTaskMatch[1]);
+          });
+          if (matchingAgent) {
+            workerId = `pid-${matchingAgent.pid}`;
+          }
+        }
+
+        if (!workerLogs.has(workerId)) {
+          workerLogs.set(workerId, []);
+        }
+
+        lines.forEach((line, idx) => {
+          if (!line.trim()) return;
+
+          const timestampMatch = line.match(/\[(\d{2}:\d{2}:\d{2})\]/);
+          const timestamp = timestampMatch ? timestampMatch[1] : null;
+
+          let level = 'stdout';
+          if (/\b(error|exception|fatal|fail|✗)\b/i.test(line)) {
+            level = 'error';
+          } else if (/\b(warn|warning|⚠)\b/i.test(line)) {
+            level = 'warn';
+          } else if (/\b(info|→|ℹ)\b/i.test(line)) {
+            level = 'info';
+          } else if (/\b(success|✓|✅)\b/i.test(line)) {
+            level = 'success';
+          }
+
+          workerLogs.get(workerId).push({
+            timestamp,
+            level,
+            content: sanitizeString(line, 500),
+            filename,
+            lineNumber: idx + 1
+          });
+        });
+      } catch (err) {
+        continue;
+      }
+    }
+
+    const workersData = {};
+    workerLogs.forEach((logs, workerId) => {
+      workersData[workerId] = {
+        logs: logs.slice(0, 1000),
+        stats: {
+          total: logs.length,
+          errors: logs.filter(l => l.level === 'error').length,
+          warnings: logs.filter(l => l.level === 'warn').length
+        }
+      };
+    });
+
+    const allLogs = [];
+    workerLogs.forEach((logs, workerId) => {
+      logs.forEach(log => {
+        allLogs.push({
+          ...log,
+          workerId
+        });
+      });
+    });
+
+    allLogs.sort((a, b) => {
+      if (a.timestamp && b.timestamp) {
+        return a.timestamp.localeCompare(b.timestamp);
+      }
+      return 0;
+    });
+
+    res.json({
+      workers: workersData,
+      merged: allLogs.slice(0, 5000),
+      totalWorkers: workerLogs.size,
+      totalLogs: allLogs.length
+    });
+  } catch (err) {
+    logger.error('Failed to get timeline:', err.message);
+    res.status(500).json({ error: 'Failed to get timeline' });
+  }
+});
+
 app.get('/api/tasks', async (req, res) => {
   try {
     const content = await fs.readFile(ROADMAP_FILE, 'utf-8');
     const tasks = [];
     const lines = content.split('\n');
-    
+
     let currentTask = null;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const taskMatch = line.match(/^### ([0-9]+\.[0-9]+)\s+(.+)$/);
-      
+
       if (taskMatch) {
         if (currentTask) {
           tasks.push(currentTask);
         }
         currentTask = {
           id: taskMatch[1],
-          title: taskMatch[2],
+          title: sanitizeString(taskMatch[2], 200),
           status: 'PENDING',
           priority: 'P9',
           dependencies: [],
@@ -1278,20 +1533,17 @@ app.get('/api/tasks', async (req, res) => {
         };
       } else if (currentTask) {
         currentTask.content += '\n' + line;
-        
-        // Extract status
+
         const statusMatch = line.match(/\*\*Status\*\*:\s*`([A-Z_]+)`/);
         if (statusMatch) {
           currentTask.status = statusMatch[1];
         }
-        
-        // Extract priority
+
         const priorityMatch = line.match(/\*\*Priority\*\*:\s*(P[0-9])/);
         if (priorityMatch) {
           currentTask.priority = priorityMatch[1];
         }
-        
-        // Extract dependencies
+
         if (line.includes('**Dependencies**:')) {
           const depMatch = line.match(/\*\*Dependencies\*\*:\s*(.+)/);
           if (depMatch) {
@@ -1299,27 +1551,25 @@ app.get('/api/tasks', async (req, res) => {
             currentTask.dependencies = deps;
           }
         }
-        
-        // Stop at next section
+
         if (line.match(/^### [0-9]+\.[0-9]+/) && i > 0) {
           tasks.push(currentTask);
           currentTask = null;
         }
       }
     }
-    
+
     if (currentTask) {
       tasks.push(currentTask);
     }
-    
+
     res.json({ tasks });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to get tasks:', err.message);
+    res.status(500).json({ error: 'Failed to get tasks' });
   }
 });
 
-// User Tasks API
-// Load user tasks from file
 async function loadUserTasks() {
   try {
     const content = await fs.readFile(USER_TASKS_FILE, 'utf-8');
@@ -1332,36 +1582,38 @@ async function loadUserTasks() {
   }
 }
 
-// Save user tasks to file
 async function saveUserTasks(data) {
   await fs.writeFile(USER_TASKS_FILE, JSON.stringify(data, null, 2), 'utf-8');
 }
 
-// Get all user tasks
 app.get('/api/user-tasks', async (req, res) => {
   try {
     const data = await loadUserTasks();
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to load user tasks:', err.message);
+    res.status(500).json({ error: 'Failed to load user tasks' });
   }
 });
 
-// Create a new user task
 app.post('/api/user-tasks', async (req, res) => {
   try {
     const { title, description, priority, assignToAgent } = req.body;
-    
-    if (!title || !title.trim()) {
+
+    const sanitizedTitle = sanitizeString(title, 200);
+    if (!sanitizedTitle) {
       return res.status(400).json({ error: 'Title is required' });
     }
-    
+
+    const validPriorities = ['P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8', 'P9'];
+    const sanitizedPriority = validPriorities.includes(priority) ? priority : 'P5';
+
     const data = await loadUserTasks();
     const task = {
       id: `user-${data.nextId}`,
-      title: title.trim(),
-      description: description || '',
-      priority: priority || 'P5',
+      title: sanitizedTitle,
+      description: sanitizeString(description, 5000),
+      priority: sanitizedPriority,
       status: assignToAgent ? 'ASSIGNED' : 'PENDING',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1371,140 +1623,170 @@ app.post('/api/user-tasks', async (req, res) => {
       reviewStatus: null,
       reviewNotes: null
     };
-    
+
     data.tasks.push(task);
     data.nextId++;
     await saveUserTasks(data);
-    
-    // If assigned to agent, start agent with this task
+
     if (assignToAgent) {
-      // Queue task assignment (will be picked up by agent)
       task.agentPid = 'pending';
     }
-    
+
+    logger.info(`User task created: ${task.id}`);
     res.json({ task, success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to create user task:', err.message);
+    res.status(500).json({ error: 'Failed to create user task' });
   }
 });
 
-// Update a user task
 app.put('/api/user-tasks/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
-    
+
+    if (!/^user-\d+$/.test(id)) {
+      return res.status(400).json({ error: 'Invalid task ID' });
+    }
+
     const data = await loadUserTasks();
     const taskIndex = data.tasks.findIndex(t => t.id === id);
-    
+
     if (taskIndex === -1) {
       return res.status(404).json({ error: 'Task not found' });
     }
-    
+
     const task = data.tasks[taskIndex];
-    
-    // Update allowed fields
-    if (updates.title !== undefined) task.title = updates.title.trim();
-    if (updates.description !== undefined) task.description = updates.description;
-    if (updates.priority !== undefined) task.priority = updates.priority;
-    if (updates.status !== undefined) task.status = updates.status;
-    if (updates.reviewStatus !== undefined) task.reviewStatus = updates.reviewStatus;
-    if (updates.reviewNotes !== undefined) task.reviewNotes = updates.reviewNotes;
-    
-    // Handle assignment
+
+    if (updates.title !== undefined) task.title = sanitizeString(updates.title, 200);
+    if (updates.description !== undefined) task.description = sanitizeString(updates.description, 5000);
+    if (updates.priority !== undefined) {
+      const validPriorities = ['P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8', 'P9'];
+      if (validPriorities.includes(updates.priority)) {
+        task.priority = updates.priority;
+      }
+    }
+    if (updates.status !== undefined) {
+      const validStatuses = ['PENDING', 'ASSIGNED', 'IN_PROGRESS', 'COMPLETED'];
+      if (validStatuses.includes(updates.status)) {
+        task.status = updates.status;
+      }
+    }
+    if (updates.reviewStatus !== undefined) {
+      const validReviewStatuses = ['approved', 'rejected', 'needs_revision', null];
+      if (validReviewStatuses.includes(updates.reviewStatus)) {
+        task.reviewStatus = updates.reviewStatus;
+      }
+    }
+    if (updates.reviewNotes !== undefined) task.reviewNotes = sanitizeString(updates.reviewNotes, 2000);
+
     if (updates.assignToAgent === true && task.status !== 'ASSIGNED' && task.status !== 'IN_PROGRESS') {
       task.status = 'ASSIGNED';
       task.assignedAt = new Date().toISOString();
       task.agentPid = 'pending';
     }
-    
-    // Handle completion
+
     if (updates.status === 'COMPLETED' && !task.completedAt) {
       task.completedAt = new Date().toISOString();
     }
-    
+
     task.updatedAt = new Date().toISOString();
-    
+
     await saveUserTasks(data);
+    logger.info(`User task updated: ${id}`);
     res.json({ task, success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to update user task:', err.message);
+    res.status(500).json({ error: 'Failed to update user task' });
   }
 });
 
-// Delete a user task
 app.delete('/api/user-tasks/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
+    if (!/^user-\d+$/.test(id)) {
+      return res.status(400).json({ error: 'Invalid task ID' });
+    }
+
     const data = await loadUserTasks();
     const taskIndex = data.tasks.findIndex(t => t.id === id);
-    
+
     if (taskIndex === -1) {
       return res.status(404).json({ error: 'Task not found' });
     }
-    
+
     data.tasks.splice(taskIndex, 1);
     await saveUserTasks(data);
-    
+
+    logger.info(`User task deleted: ${id}`);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to delete user task:', err.message);
+    res.status(500).json({ error: 'Failed to delete user task' });
   }
 });
 
-// Assign a user task to agent
 app.post('/api/user-tasks/:id/assign', async (req, res) => {
   try {
     const { id } = req.params;
-    const { taskId } = req.body; // Optional roadmap task ID to map to
-    
+    const { taskId } = req.body;
+
+    if (!/^user-\d+$/.test(id)) {
+      return res.status(400).json({ error: 'Invalid task ID' });
+    }
+
     const data = await loadUserTasks();
     const task = data.tasks.find(t => t.id === id);
-    
+
     if (!task) {
       return res.status(404).json({ error: 'Task not found' });
     }
-    
+
     if (task.status === 'IN_PROGRESS' || task.status === 'COMPLETED') {
       return res.status(400).json({ error: 'Task is already in progress or completed' });
     }
-    
+
     task.status = 'ASSIGNED';
     task.assignedAt = new Date().toISOString();
     task.agentPid = 'pending';
-    task.roadmapTaskId = taskId || null;
+    task.roadmapTaskId = taskId ? sanitizeString(taskId, 20) : null;
     task.updatedAt = new Date().toISOString();
-    
+
     await saveUserTasks(data);
-    
+
+    logger.info(`User task assigned: ${id}`);
     res.json({ task, success: true, message: 'Task assigned to agent' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to assign user task:', err.message);
+    res.status(500).json({ error: 'Failed to assign user task' });
   }
 });
 
-// Review/approve a user task
 app.post('/api/user-tasks/:id/review', async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, notes } = req.body; // status: 'approved', 'rejected', 'needs_revision'
-    
+    const { status, notes } = req.body;
+
+    if (!/^user-\d+$/.test(id)) {
+      return res.status(400).json({ error: 'Invalid task ID' });
+    }
+
     if (!status || !['approved', 'rejected', 'needs_revision'].includes(status)) {
       return res.status(400).json({ error: 'Invalid review status' });
     }
-    
+
     const data = await loadUserTasks();
     const task = data.tasks.find(t => t.id === id);
-    
+
     if (!task) {
       return res.status(404).json({ error: 'Task not found' });
     }
-    
+
     task.reviewStatus = status;
-    task.reviewNotes = notes || null;
+    task.reviewNotes = sanitizeString(notes, 2000);
     task.reviewedAt = new Date().toISOString();
-    
+
     if (status === 'approved') {
       task.status = 'COMPLETED';
       task.completedAt = new Date().toISOString();
@@ -1513,32 +1795,37 @@ app.post('/api/user-tasks/:id/review', async (req, res) => {
       task.assignedAt = null;
       task.agentPid = null;
     }
-    
+
     task.updatedAt = new Date().toISOString();
-    
+
     await saveUserTasks(data);
-    
+
+    logger.info(`User task reviewed: ${id} - ${status}`);
     res.json({ task, success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to review user task:', err.message);
+    res.status(500).json({ error: 'Failed to review user task' });
   }
 });
 
-// Agent API: Create user task (for agents to call programmatically)
 app.post('/api/agent/user-tasks', async (req, res) => {
   try {
     const { title, description, priority, assignToAgent, sourceTaskId, sourceAgent } = req.body;
-    
-    if (!title || !title.trim()) {
+
+    const sanitizedTitle = sanitizeString(title, 200);
+    if (!sanitizedTitle) {
       return res.status(400).json({ error: 'Title is required' });
     }
-    
+
+    const validPriorities = ['P0', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8', 'P9'];
+    const sanitizedPriority = validPriorities.includes(priority) ? priority : 'P5';
+
     const data = await loadUserTasks();
     const task = {
       id: `user-${data.nextId}`,
-      title: title.trim(),
-      description: description || '',
-      priority: priority || 'P5',
+      title: sanitizedTitle,
+      description: sanitizeString(description, 5000),
+      priority: sanitizedPriority,
       status: assignToAgent ? 'ASSIGNED' : 'PENDING',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1547,54 +1834,90 @@ app.post('/api/agent/user-tasks', async (req, res) => {
       agentPid: assignToAgent ? 'pending' : null,
       reviewStatus: null,
       reviewNotes: null,
-      sourceTaskId: sourceTaskId || null,
-      sourceAgent: sourceAgent || 'roadmap-agent',
+      sourceTaskId: sourceTaskId ? sanitizeString(sourceTaskId, 50) : null,
+      sourceAgent: sourceAgent ? sanitizeString(sourceAgent, 50) : 'roadmap-agent',
       createdBy: 'agent'
     };
-    
+
     data.tasks.push(task);
     data.nextId++;
     await saveUserTasks(data);
-    
+
+    logger.info(`Agent created user task: ${task.id}`);
     res.json({ task, success: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    logger.error('Failed to create agent user task:', err.message);
+    res.status(500).json({ error: 'Failed to create user task' });
   }
 });
 
-// Cleanup on exit
-process.on('SIGTERM', () => {
-  logger.info('Shutting down (SIGTERM)...');
-  cleanup();
+app.use((err, req, res, next) => {
+  logger.error('Unhandled error:', err.message);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
-process.on('SIGINT', () => {
-  logger.info('Shutting down (SIGINT)...');
-  cleanup();
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
 });
 
-function cleanup() {
-  // Stop all log watchers
+function gracefulShutdown(signal) {
+  if (isShuttingDown) {
+    logger.warn('Shutdown already in progress');
+    return;
+  }
+
+  isShuttingDown = true;
+  logger.info(`Received ${signal}, starting graceful shutdown...`);
+
+  for (const res of activeConnections) {
+    try {
+      res.end();
+    } catch (err) {
+      logger.debug('Error closing connection:', err.message);
+    }
+  }
+  activeConnections.clear();
+
   for (const [res, { filepath, watcher }] of logWatchers.entries()) {
     try {
       fsSync.unwatchFile(filepath, watcher);
     } catch (err) {
-      // Ignore cleanup errors
+      logger.debug('Error unwatching file:', err.message);
     }
   }
   logWatchers.clear();
-  
-  // Kill managed agent process
+
   if (agentProcess && !agentProcess.killed) {
+    logger.info('Stopping managed agent process...');
     agentProcess.kill('SIGTERM');
   }
-  process.exit(0);
+
+  if (server) {
+    server.close((err) => {
+      if (err) {
+        logger.error('Error closing server:', err.message);
+        process.exit(1);
+      }
+      logger.info('Server closed successfully');
+      process.exit(0);
+    });
+
+    setTimeout(() => {
+      logger.warn('Forceful shutdown after timeout');
+      process.exit(1);
+    }, 10000);
+  } else {
+    process.exit(0);
+  }
 }
 
-// Handle uncaught errors gracefully
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 process.on('uncaughtException', (err) => {
   logger.error('Uncaught exception:', err.message);
   logger.debug('Stack:', err.stack);
+  gracefulShutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -1602,7 +1925,7 @@ process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled rejection:', message);
 });
 
-app.listen(PORT, () => {
-  logger.info(`Server started on http://localhost:${PORT}`);
-  logger.info(`Health check: http://localhost:${PORT}/api/health`);
+server = app.listen(PORT, HOST, () => {
+  logger.info(`Server started on http://${HOST}:${PORT}`);
+  logger.info(`Health check: http://${HOST}:${PORT}/api/health`);
 });

@@ -75,39 +75,49 @@
     </div>
 
     <div class="main-content">
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="roadmap">ROADMAP.md</button>
-        <button class="tab-btn" data-tab="prompt">ROADMAP_PROMPT.md</button>
-        <button class="tab-btn" data-tab="logs">Logs</button>
-        <button class="tab-btn" data-tab="tasks">Tasks</button>
-        <button class="tab-btn" data-tab="user-tasks">User Tasks</button>
+      <div class="tabs" role="tablist" aria-label="Main navigation tabs">
+        <button class="tab-btn active" data-tab="roadmap" role="tab" aria-selected="true" aria-controls="tab-roadmap">ROADMAP.md</button>
+        <button class="tab-btn" data-tab="prompt" role="tab" aria-selected="false" aria-controls="tab-prompt">ROADMAP_PROMPT.md</button>
+        <button class="tab-btn" data-tab="logs" role="tab" aria-selected="false" aria-controls="tab-logs" id="tab-logs-btn">Logs</button>
+        <button class="tab-btn" data-tab="tasks" role="tab" aria-selected="false" aria-controls="tab-tasks">Tasks</button>
+        <button class="tab-btn" data-tab="user-tasks" role="tab" aria-selected="false" aria-controls="tab-user-tasks">User Tasks</button>
       </div>
 
-      <div class="tab-content active" id="tab-roadmap">
+      <div class="tab-content active" id="tab-roadmap" role="tabpanel" aria-labelledby="tab-roadmap-btn" aria-hidden="false">
         <div class="content-header">
           <h2>ROADMAP.md</h2>
-          <button id="btn-refresh-roadmap" class="btn btn-sm">Refresh</button>
+          <button id="btn-refresh-roadmap" class="btn btn-sm" aria-label="Refresh roadmap">Refresh</button>
         </div>
-        <div id="roadmap-content" class="markdown-content"></div>
+        <div id="roadmap-content" class="markdown-content" role="article"></div>
       </div>
 
-      <div class="tab-content" id="tab-prompt">
+      <div class="tab-content" id="tab-prompt" role="tabpanel" aria-labelledby="tab-prompt-btn" aria-hidden="true">
         <div class="content-header">
           <h2>ROADMAP_PROMPT.md</h2>
-          <button id="btn-refresh-prompt" class="btn btn-sm">Refresh</button>
+          <button id="btn-refresh-prompt" class="btn btn-sm" aria-label="Refresh prompt">Refresh</button>
         </div>
-        <div id="prompt-content" class="markdown-content"></div>
+        <div id="prompt-content" class="markdown-content" role="article"></div>
       </div>
 
-      <div class="tab-content" id="tab-logs">
+      <div class="tab-content" id="tab-logs" role="tabpanel" aria-labelledby="tab-logs-btn">
         <div class="content-header">
-          <h2>Agent Logs</h2>
+          <h2 id="logs-heading">Agent Logs</h2>
           <div class="log-controls">
-            <select id="log-select">
+            <select id="log-select" aria-label="Select log file">
               <option value="live">Live Stream</option>
             </select>
-            <input type="text" id="log-search" placeholder="Search logs..." class="search-input">
-            <select id="log-level-filter" class="filter-select">
+            <div class="search-group">
+              <input type="text" id="log-search" placeholder="Search logs..." class="search-input" aria-label="Search logs">
+              <div class="search-options">
+                <label title="Regex mode">
+                  <input type="checkbox" id="log-search-regex" aria-label="Enable regex search"> Regex
+                </label>
+                <label title="Case sensitive">
+                  <input type="checkbox" id="log-search-case" aria-label="Case sensitive search"> Case
+                </label>
+              </div>
+            </div>
+            <select id="log-level-filter" class="filter-select" aria-label="Filter by log level">
               <option value="">All Levels</option>
               <option value="stdout">Stdout</option>
               <option value="stderr">Stderr</option>
@@ -116,15 +126,31 @@
               <option value="warn">Warning</option>
               <option value="error">Error</option>
             </select>
-            <span id="log-source-indicator" class="log-source-indicator"></span>
-            <button id="btn-clear-logs" class="btn btn-sm">Clear</button>
-            <button id="btn-export-logs" class="btn btn-sm">Export</button>
+            <div class="log-display-controls">
+              <label title="Font size">
+                <select id="log-font-size" class="filter-select" style="width: 80px;" aria-label="Font size">
+                  <option value="10">10px</option>
+                  <option value="12" selected>12px</option>
+                  <option value="14">14px</option>
+                  <option value="16">16px</option>
+                  <option value="18">18px</option>
+                </select>
+              </label>
+              <button id="btn-follow-mode" class="btn btn-sm" title="Follow mode (auto-scroll)" aria-label="Toggle follow mode">Follow</button>
+              <button id="btn-copy-logs" class="btn btn-sm" title="Copy selected lines" aria-label="Copy logs to clipboard">Copy</button>
+            </div>
+            <span id="log-source-indicator" class="log-source-indicator" aria-live="polite"></span>
+            <button id="btn-clear-logs" class="btn btn-sm" aria-label="Clear logs">Clear</button>
+            <button id="btn-export-logs" class="btn btn-sm" aria-label="Export logs">Export</button>
+            <button id="btn-log-stats" class="btn btn-sm" aria-label="Show log statistics">Stats</button>
+            <button id="btn-worker-timeline" class="btn btn-sm" aria-label="Show cross-worker timeline">Timeline</button>
           </div>
         </div>
-        <div id="logs-content" class="logs-content"></div>
+        <div id="log-stats-panel" class="log-stats-panel" style="display: none;" role="region" aria-label="Log statistics"></div>
+        <div id="logs-content" class="logs-content" data-line-numbers="true" role="log" aria-label="Log output" aria-live="polite"></div>
       </div>
 
-      <div class="tab-content" id="tab-tasks">
+      <div class="tab-content" id="tab-tasks" role="tabpanel" aria-labelledby="tab-tasks-btn" aria-hidden="true">
         <div class="content-header">
           <h2>Task List</h2>
           <div class="task-controls">
@@ -155,7 +181,7 @@
         <div id="tasks-content" class="tasks-content"></div>
       </div>
 
-      <div class="tab-content" id="tab-user-tasks">
+      <div class="tab-content" id="tab-user-tasks" role="tabpanel" aria-labelledby="tab-user-tasks-btn" aria-hidden="true">
         <div class="content-header">
           <h2>User Tasks</h2>
           <div class="user-task-controls">

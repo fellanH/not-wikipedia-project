@@ -5,8 +5,8 @@
 **Last Updated**: 2025-01-30
 **Total Tasks**:       35
 **Completed**: 7
-**In Progress**: 4
-**Pending**: 24
+**In Progress**: 5
+**Pending**: 23
 
 ---
 
@@ -416,7 +416,7 @@ try {
 
 ### 2.2 Add Retry Logic to wiki-git-publish.ts
 
-**Status**: `PENDING`
+**Status**: `IN_PROGRESS`
 **Priority**: P1
 **Effort**: Low
 **Dependencies**: 1.6 (tests first)
