@@ -19,7 +19,6 @@ You are executing a task from the Not-Wikipedia project ROADMAP.md. Follow the s
 
 ---
 
-
 ## Current Task: 2.2 - Add Retry Logic to wiki-git-publish.ts
 
 ### 2.2 Add Retry Logic to wiki-git-publish.ts
@@ -30,35 +29,39 @@ You are executing a task from the Not-Wikipedia project ROADMAP.md. Follow the s
 **Dependencies**: 1.6 (tests first)
 
 **Specification**:
+
 - Add retry with exponential backoff for git push
 - Maximum 3 attempts
 - Log each retry attempt
 - Return detailed failure info if all retries fail
 
 **Files to Modify**:
+
 - `local-agent/lib/mcp/src/tools/wiki-git-publish.ts` (lines 99-112)
 
 **Implementation**:
+
 ```typescript
 async function pushWithRetry(maxAttempts = 3): Promise<boolean> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      execSync('git push', { cwd: WIKI_CONTENT_DIR })
-      return true
+      execSync("git push", { cwd: WIKI_CONTENT_DIR });
+      return true;
     } catch (e) {
       if (attempt === maxAttempts) {
-        console.error(`Push failed after ${maxAttempts} attempts`)
-        return false
+        console.error(`Push failed after ${maxAttempts} attempts`);
+        return false;
       }
-      const delay = Math.pow(2, attempt) * 1000  // 2s, 4s, 8s
-      await new Promise(r => setTimeout(r, delay))
+      const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
-  return false
+  return false;
 }
 ```
 
 **Acceptance Criteria**:
+
 - [ ] Push retries up to 3 times
 - [ ] Backoff delays increase exponentially
 - [ ] Final failure returns structured error
@@ -83,6 +86,7 @@ If during task execution you identify follow-up work, improvements, or related t
 ```
 
 User tasks will be automatically processed by agents in future runs. Use this for:
+
 - Follow-up improvements identified during implementation
 - Related work that should be tracked separately
 - Tasks that emerge from the current work but aren't part of the original spec
@@ -103,4 +107,3 @@ If you encounter a blocker that prevents completion, respond with:
 TASK_BLOCKED: 2.2
 REASON: <description of the blocker>
 ```
-

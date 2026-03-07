@@ -5,7 +5,9 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+    Cantarell, sans-serif;
   background: #0d1117;
   color: #c9d1d9;
   line-height: 1.6;
@@ -83,14 +85,16 @@ header h1 {
   margin-bottom: 30px;
 }
 
-.control-group, .stats-panel {
+.control-group,
+.stats-panel {
   background: #161b22;
   border: 1px solid #30363d;
   border-radius: 8px;
   padding: 20px;
 }
 
-.control-group h3, .stats-panel h3 {
+.control-group h3,
+.stats-panel h3 {
   margin-bottom: 15px;
   color: #58a6ff;
   font-size: 16px;
@@ -203,10 +207,18 @@ header h1 {
   text-transform: uppercase;
 }
 
-.stat-done .stat-value { color: #238636; }
-.stat-progress .stat-value { color: #d29922; }
-.stat-pending .stat-value { color: #58a6ff; }
-.stat-blocked .stat-value { color: #da3633; }
+.stat-done .stat-value {
+  color: #238636;
+}
+.stat-progress .stat-value {
+  color: #d29922;
+}
+.stat-pending .stat-value {
+  color: #58a6ff;
+}
+.stat-blocked .stat-value {
+  color: #da3633;
+}
 
 .progress-bar {
   height: 8px;
@@ -412,73 +424,75 @@ header h1 {
   color: #c9d1d9;
 }
 
-.markdown-content h1 { 
-  color: #58a6ff; 
-  margin: 24px 0 12px; 
+.markdown-content h1 {
+  color: #58a6ff;
+  margin: 24px 0 12px;
   font-size: 24px;
   border-bottom: 1px solid #30363d;
   padding-bottom: 8px;
 }
-.markdown-content h2 { 
-  color: #58a6ff; 
-  margin: 20px 0 10px; 
+.markdown-content h2 {
+  color: #58a6ff;
+  margin: 20px 0 10px;
   font-size: 20px;
   border-bottom: 1px solid #30363d;
   padding-bottom: 6px;
 }
-.markdown-content h3 { 
-  color: #79c0ff; 
-  margin: 16px 0 8px; 
+.markdown-content h3 {
+  color: #79c0ff;
+  margin: 16px 0 8px;
   font-size: 16px;
 }
-.markdown-content h4 { 
-  color: #a5d6ff; 
-  margin: 14px 0 6px; 
+.markdown-content h4 {
+  color: #a5d6ff;
+  margin: 14px 0 6px;
   font-size: 14px;
 }
-.markdown-content p { 
-  margin: 12px 0; 
+.markdown-content p {
+  margin: 12px 0;
 }
-.markdown-content code { 
-  background: #0d1117; 
-  padding: 2px 6px; 
-  border-radius: 3px; 
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', monospace;
+.markdown-content code {
+  background: #0d1117;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
   font-size: 13px;
 }
-.markdown-content pre { 
-  background: #0d1117; 
-  padding: 16px; 
-  border-radius: 6px; 
-  overflow-x: auto; 
+.markdown-content pre {
+  background: #0d1117;
+  padding: 16px;
+  border-radius: 6px;
+  overflow-x: auto;
   border: 1px solid #30363d;
   margin: 12px 0;
 }
-.markdown-content pre code { 
-  background: none; 
-  padding: 0; 
+.markdown-content pre code {
+  background: none;
+  padding: 0;
   color: #c9d1d9;
 }
-.markdown-content table { 
-  border-collapse: collapse; 
-  width: 100%; 
-  margin: 15px 0; 
+.markdown-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 15px 0;
   border: 1px solid #30363d;
 }
-.markdown-content th, .markdown-content td { 
-  border: 1px solid #30363d; 
-  padding: 10px 14px; 
-  text-align: left; 
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid #30363d;
+  padding: 10px 14px;
+  text-align: left;
 }
-.markdown-content th { 
-  background: #161b22; 
-  color: #58a6ff; 
+.markdown-content th {
+  background: #161b22;
+  color: #58a6ff;
   font-weight: 600;
 }
 .markdown-content tr:hover {
   background: #0d1117;
 }
-.markdown-content ul, .markdown-content ol {
+.markdown-content ul,
+.markdown-content ol {
   margin: 12px 0;
   padding-left: 24px;
 }
@@ -515,7 +529,7 @@ header h1 {
 }
 
 .logs-content {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', monospace;
+  font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
   font-size: 12px;
   background: #0d1117;
   padding: 15px;
@@ -565,7 +579,7 @@ header h1 {
 }
 
 .log-line.bookmarked::after {
-  content: '🔖';
+  content: "🔖";
   position: absolute;
   left: -55px;
   font-size: 10px;
@@ -575,12 +589,24 @@ header h1 {
   margin-bottom: 2px;
 }
 
-.log-line.stdout { color: #c9d1d9; }
-.log-line.stderr { color: #f85149; }
-.log-line.info { color: #58a6ff; }
-.log-line.success { color: #238636; }
-.log-line.warn { color: #d29922; }
-.log-line.error { color: #f85149; }
+.log-line.stdout {
+  color: #c9d1d9;
+}
+.log-line.stderr {
+  color: #f85149;
+}
+.log-line.info {
+  color: #58a6ff;
+}
+.log-line.success {
+  color: #238636;
+}
+.log-line.warn {
+  color: #d29922;
+}
+.log-line.error {
+  color: #f85149;
+}
 
 .log-line:hover {
   background: rgba(88, 166, 255, 0.05);
@@ -628,7 +654,7 @@ header h1 {
 
 .log-filepath {
   color: #79c0ff;
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', monospace;
+  font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
 }
 
 .log-stats-panel {
@@ -812,10 +838,22 @@ header h1 {
   text-transform: uppercase;
 }
 
-.task-status.DONE { background: #238636; color: #fff; }
-.task-status.IN_PROGRESS { background: #d29922; color: #fff; }
-.task-status.PENDING { background: #30363d; color: #8b949e; }
-.task-status.BLOCKED { background: #da3633; color: #fff; }
+.task-status.DONE {
+  background: #238636;
+  color: #fff;
+}
+.task-status.IN_PROGRESS {
+  background: #d29922;
+  color: #fff;
+}
+.task-status.PENDING {
+  background: #30363d;
+  color: #8b949e;
+}
+.task-status.BLOCKED {
+  background: #da3633;
+  color: #fff;
+}
 
 .task-title {
   color: #c9d1d9;
@@ -974,7 +1012,9 @@ header h1 {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Responsive design */
@@ -1013,12 +1053,14 @@ header h1 {
     align-items: flex-start;
   }
 
-  .task-controls, .log-controls {
+  .task-controls,
+  .log-controls {
     width: 100%;
     flex-direction: column;
   }
 
-  .search-input, .filter-select {
+  .search-input,
+  .filter-select {
     width: 100%;
   }
 
@@ -1048,7 +1090,9 @@ header h1 {
   border: 1px solid #30363d;
   border-radius: 8px;
   padding: 16px;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
 }
 
 .user-task-item:hover {
@@ -1095,7 +1139,7 @@ header h1 {
 }
 
 .user-task-id {
-  font-family: 'Monaco', 'Courier New', monospace;
+  font-family: "Monaco", "Courier New", monospace;
   font-size: 12px;
   color: #8b949e;
   background: #0d1117;

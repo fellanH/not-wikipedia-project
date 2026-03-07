@@ -9,6 +9,7 @@ An autonomous Claude Code loop that builds a fictional encyclopedia — **Not-Wi
 Ralph continuously runs Claude Code to generate and maintain a fictional Wikipedia-style encyclopedia. Each article mimics Wikipedia's visual style while containing entirely fabricated content.
 
 The system:
+
 - Fetches tasks via MCP tools (create articles, repair broken links, resolve placeholders, fix orphans)
 - Injects human seed passages as the **sole creative driver**
 - Runs Claude to create HTML articles following Wikipedia's aesthetic
@@ -26,13 +27,13 @@ The system:
 
 The agent receives ONLY:
 
-| Input | Purpose |
-|-------|---------|
-| **Human seed** | The sole creative input — a passage, quote, or text |
-| **Task type** | What action to take (`create_new`, `repair_broken_link`, etc.) |
-| **Target path** | Where to write the file |
-| **HTML template** | Structural skeleton only — no example content |
-| **CSS reference** | Visual styling (colors, fonts, layout) |
+| Input             | Purpose                                                        |
+| ----------------- | -------------------------------------------------------------- |
+| **Human seed**    | The sole creative input — a passage, quote, or text            |
+| **Task type**     | What action to take (`create_new`, `repair_broken_link`, etc.) |
+| **Target path**   | Where to write the file                                        |
+| **HTML template** | Structural skeleton only — no example content                  |
+| **CSS reference** | Visual styling (colors, fonts, layout)                         |
 
 **Nothing else.** No interpretation hints. No vocabulary guidance. No thematic suggestions.
 
@@ -40,28 +41,29 @@ The agent receives ONLY:
 
 These create deterministic patterns and MUST NOT appear:
 
-| Forbidden | Why |
-|-----------|-----|
-| Interpretation instructions | "Derive the topic from..." steers inference |
-| Vocabulary guidance | "Avoid these words..." or "Use varied..." biases output |
-| Thematic hints | "Connection can be metaphorical..." primes specific modes |
-| Category examples | Lists of topics constrain imagination |
-| Numeric requirements | "3-6 sections" creates formulas |
-| Writing style rules | "Read distinctly" is subjective instruction |
+| Forbidden                   | Why                                                       |
+| --------------------------- | --------------------------------------------------------- |
+| Interpretation instructions | "Derive the topic from..." steers inference               |
+| Vocabulary guidance         | "Avoid these words..." or "Use varied..." biases output   |
+| Thematic hints              | "Connection can be metaphorical..." primes specific modes |
+| Category examples           | Lists of topics constrain imagination                     |
+| Numeric requirements        | "3-6 sections" creates formulas                           |
+| Writing style rules         | "Read distinctly" is subjective instruction               |
 
 ### Allowed in Context Files
 
-| Allowed | Why |
-|---------|-----|
-| HTML skeleton | `<h1>`, `<table class="infobox">` — pure structure |
-| CSS styling | Colors, fonts, layout — visual only |
-| File conventions | `.html`, kebab-case — technical |
-| Link validation | "Must point to existing files" — ecosystem integrity |
-| Structural checklist | "Has infobox, has references" — binary checks |
+| Allowed              | Why                                                  |
+| -------------------- | ---------------------------------------------------- |
+| HTML skeleton        | `<h1>`, `<table class="infobox">` — pure structure   |
+| CSS styling          | Colors, fonts, layout — visual only                  |
+| File conventions     | `.html`, kebab-case — technical                      |
+| Link validation      | "Must point to existing files" — ecosystem integrity |
+| Structural checklist | "Has infobox, has references" — binary checks        |
 
 ### File Responsibilities
 
 **PROMPT.md** — Generated per task, contains:
+
 - Task type and priority
 - Human seed (quoted, with attribution)
 - Infobox color
@@ -69,6 +71,7 @@ These create deterministic patterns and MUST NOT appear:
 - **NOTHING ELSE**
 
 **CONTRIBUTING.md** — Static reference, contains:
+
 - HTML template (empty structure)
 - CSS specifications
 - File naming rules
@@ -77,6 +80,7 @@ These create deterministic patterns and MUST NOT appear:
 - **NO writing style instructions**
 
 **ralph.sh** — Orchestration, must:
+
 - Generate minimal PROMPT.md
 - NOT inject guidance text
 - NOT add vocabulary reminders
@@ -96,11 +100,11 @@ Human Seed ─────► Agent (minimal context) ─────► Unique 
 
 ## Project Structure
 
-| Repository | Description |
-|------------|-------------|
-| [not-wikipedia-project](https://github.com/fellanH/not-wikipedia-project) | Parent repository (this repo) |
-| [local-agent](https://github.com/fellanH/not-wikipedia) | Orchestration, MCP tools, and agent loop |
-| [wiki-content](https://github.com/fellanH/wiki-content) | Article content (deploys to Vercel) |
+| Repository                                                                | Description                              |
+| ------------------------------------------------------------------------- | ---------------------------------------- |
+| [not-wikipedia-project](https://github.com/fellanH/not-wikipedia-project) | Parent repository (this repo)            |
+| [local-agent](https://github.com/fellanH/not-wikipedia)                   | Orchestration, MCP tools, and agent loop |
+| [wiki-content](https://github.com/fellanH/wiki-content)                   | Article content (deploys to Vercel)      |
 
 ```
 not-wikipedia-project/            # Parent repository
@@ -166,6 +170,7 @@ The **wiki-content** repository is the source of truth. Ralph writes directly to
 ```
 
 Every article created by Ralph is automatically:
+
 1. Committed to the content repository
 2. Pushed to GitHub
 3. Deployed to Vercel (~5 seconds)
@@ -174,12 +179,12 @@ Every article created by Ralph is automatically:
 
 The live site includes HTMX-powered interactivity:
 
-| Feature | Description |
-|---------|-------------|
-| **Instant Search** | Client-side search with pre-built index |
+| Feature              | Description                               |
+| -------------------- | ----------------------------------------- |
+| **Instant Search**   | Client-side search with pre-built index   |
 | **Article Previews** | Hover over links to see article summaries |
-| **Categories** | Browse articles by category |
-| **Random Article** | Discover random entries |
+| **Categories**       | Browse articles by category               |
+| **Random Article**   | Discover random entries                   |
 
 ### Building the Search Index
 
@@ -209,15 +214,15 @@ The script runs indefinitely (or until `MAX_LOOPS_PER_WORKER` is reached), creat
 
 Edit variables at the top of `ralph.sh`:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PARALLEL_WORKERS` | 3 | Number of parallel agent workers |
-| `MAX_LOOPS_PER_WORKER` | 100 | Maximum iterations per worker (0 = unlimited) |
-| `MAX_LOGS` | 100 | Log files to keep |
-| `MAX_DISCOVERY_DEPTH` | 3 | Maximum recursion depth for Content Fractal |
-| `HEALTH_CHECK_INTERVAL` | 10 | Full health check every N total loops |
-| `AUTO_PUBLISH` | true | Auto-publish to content repo after article creation |
-| `VERCEL_DEPLOY` | false | Trigger manual Vercel deploy (not needed with GitHub auto-deploy) |
+| Variable                | Default | Description                                                       |
+| ----------------------- | ------- | ----------------------------------------------------------------- |
+| `PARALLEL_WORKERS`      | 3       | Number of parallel agent workers                                  |
+| `MAX_LOOPS_PER_WORKER`  | 100     | Maximum iterations per worker (0 = unlimited)                     |
+| `MAX_LOGS`              | 100     | Log files to keep                                                 |
+| `MAX_DISCOVERY_DEPTH`   | 3       | Maximum recursion depth for Content Fractal                       |
+| `HEALTH_CHECK_INTERVAL` | 10      | Full health check every N total loops                             |
+| `AUTO_PUBLISH`          | true    | Auto-publish to content repo after article creation               |
+| `VERCEL_DEPLOY`         | false   | Trigger manual Vercel deploy (not needed with GitHub auto-deploy) |
 
 ### Environment Variables
 
@@ -228,12 +233,12 @@ PARALLEL_WORKERS=5 AUTO_PUBLISH=true ./ralph.sh
 
 ## Task Types
 
-| Task | Description |
-|------|-------------|
-| `create_new` | Create new content from a human seed passage |
-| `repair_broken_link` | Create missing article that other pages link to |
+| Task                  | Description                                     |
+| --------------------- | ----------------------------------------------- |
+| `create_new`          | Create new content from a human seed passage    |
+| `repair_broken_link`  | Create missing article that other pages link to |
 | `resolve_placeholder` | Replace `NEXT_PAGE_PLACEHOLDER` with real links |
-| `fix_orphan` | Add incoming links to isolated articles |
+| `fix_orphan`          | Add incoming links to isolated articles         |
 
 ## Requirements
 
@@ -281,19 +286,19 @@ E, F are queued at depth 2
 
 The discovery queue uses intelligent prioritization:
 
-| Factor | Effect |
-|--------|--------|
-| Lower depth | Higher priority (closer to root concepts) |
-| Multiple references | Higher priority (more demanded) |
-| Queue order | FIFO within same priority |
+| Factor              | Effect                                    |
+| ------------------- | ----------------------------------------- |
+| Lower depth         | Higher priority (closer to root concepts) |
+| Multiple references | Higher priority (more demanded)           |
+| Queue order         | FIFO within same priority                 |
 
 ### Configuration
 
 Edit `ralph.sh` to adjust:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MAX_DISCOVERY_DEPTH` | 3 | Maximum recursion layers |
+| Variable              | Default | Description              |
+| --------------------- | ------- | ------------------------ |
+| `MAX_DISCOVERY_DEPTH` | 3       | Maximum recursion layers |
 
 ### Relevance Filtering
 
@@ -318,6 +323,7 @@ To prevent topic drift (e.g., starting at "Linguistics" and ending at "Quantum M
 - **Priority Decay**: Deeper concepts have lower priority
 
 Each generated article includes:
+
 - Wikipedia-style warning box (unique per article)
 - Infobox with themed color
 - Content sections

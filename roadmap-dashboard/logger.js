@@ -2,12 +2,14 @@ const LOG_LEVELS = {
   ERROR: 0,
   WARN: 1,
   INFO: 2,
-  DEBUG: 3
+  DEBUG: 3,
 };
 
-const LOG_LEVEL_NAMES = ['ERROR', 'WARN', 'INFO', 'DEBUG'];
-const currentLevel = LOG_LEVELS[process.env.LOG_LEVEL?.toUpperCase()] ?? LOG_LEVELS.INFO;
-const useJson = process.env.LOG_FORMAT === 'json' || process.env.NODE_ENV === 'production';
+const LOG_LEVEL_NAMES = ["ERROR", "WARN", "INFO", "DEBUG"];
+const currentLevel =
+  LOG_LEVELS[process.env.LOG_LEVEL?.toUpperCase()] ?? LOG_LEVELS.INFO;
+const useJson =
+  process.env.LOG_FORMAT === "json" || process.env.NODE_ENV === "production";
 
 function formatTimestamp() {
   return new Date().toISOString();
@@ -23,7 +25,7 @@ function formatMessage(level, message, meta = {}) {
       level: levelName,
       message,
       pid: process.pid,
-      ...meta
+      ...meta,
     };
     return JSON.stringify(logObj);
   }
@@ -35,7 +37,12 @@ function extractMeta(args) {
   if (args.length === 0) return { meta: {}, rest: [] };
 
   const last = args[args.length - 1];
-  if (last && typeof last === 'object' && !Array.isArray(last) && !(last instanceof Error)) {
+  if (
+    last &&
+    typeof last === "object" &&
+    !Array.isArray(last) &&
+    !(last instanceof Error)
+  ) {
     return { meta: last, rest: args.slice(0, -1) };
   }
 
@@ -73,7 +80,7 @@ const logger = {
       const { meta, rest } = extractMeta(args);
       console.log(formatMessage(LOG_LEVELS.DEBUG, message, meta), ...rest);
     }
-  }
+  },
 };
 
 module.exports = logger;
