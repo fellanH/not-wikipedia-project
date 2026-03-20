@@ -1,0 +1,23 @@
+name: not-wikipedia-project
+layout: single
+type: personal
+status: active
+owner: felix
+
+stack:
+  - typescript
+  - node
+  - bash
+  - sqlite
+
+git:
+  identity: fellanH
+  push_allowed: true
+
+vault_bucket: not-wikipedia-project
+
+devServers:
+  - name: dashboard
+    command: npm run dashboard
+    port: 3001
+    health: http://localhost:3001/
