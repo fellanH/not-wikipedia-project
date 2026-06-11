@@ -1,0 +1,6 @@
+# domain.toml — not-wikipedia package manifest (portable core: id · version · group)
+# The canonical territory store (spec domain-canonical-store). Backfilled so the workspace is
+# scannable + drainable.
+id = "not-wikipedia"
+version = "0.1.0"
+group = "products"
